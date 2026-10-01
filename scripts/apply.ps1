@@ -89,7 +89,12 @@ if (Test-CDP $Port) {
   Get-Process WorkBuddy -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
   Start-Sleep -Seconds 2
   Write-Host "以 CDP 调试模式启动（端口 $Port）..."
-  Start-Process -FilePath $exe -ArgumentList "--remote-debugging-port=$Port"
+  # 用 Win32_Process.Create 启动：进程由 WMI 服务派生，不附着本控制台，
+  # 关闭本 PowerShell 窗口不会连带退出 WorkBuddy（Start-Process 会附着控制台，
+  # 关窗时 conhost 向附着进程发送 CTRL_CLOSE_EVENT 导致 WorkBuddy 被终止）
+  $cmdLine = '"{0}" --remote-debugging-port={1}' -f $exe, $Port
+  $spawn = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmdLine }
+  if ($spawn.ReturnValue -ne 0) { Write-Error "启动 WorkBuddy 失败（ReturnValue=$($spawn.ReturnValue)）"; exit 1 }
   $deadline = (Get-Date).AddSeconds(30)
   while (-not (Test-CDP $Port)) {
     if ((Get-Date) -ge $deadline) { Write-Error "CDP 在 30 秒内未就绪"; exit 1 }
