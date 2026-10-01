@@ -100,6 +100,15 @@ body[data-application-name=workbuddy] {
   background: transparent !important;
 }
 
+/* 滚动层与 grid 容器同样带不透明底色（teams-grid-scroll-content 为纯色 rgb(20,20,20)；
+   gridView 容器是 CSS module 哈希类，底色来自 --cb-panel-* 变量）。
+   用类名子串匹配规避构建哈希；必须放在 [data-view-id] 系列规则之前，
+   使 sidebar 磨砂 / main-content 渐变在同优先级下靠后胜出 */
+.teams-grid-scroll-content,
+[class*=gridView] {
+  background: transparent !important;
+}
+
 /* 所有 grid 项容器透明，让 #root 背景图大面积透出 */
 [data-view-id] {
   background: transparent !important;
