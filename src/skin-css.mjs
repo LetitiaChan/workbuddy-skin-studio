@@ -109,6 +109,7 @@ body[data-application-name=workbuddy] {
 .conversation-list,
 .main-content,
 .main-content--welcome,
+.conversation-shell,
 .sidebar-next {
   background: transparent !important;
 }
