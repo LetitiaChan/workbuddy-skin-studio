@@ -135,6 +135,12 @@ body[data-application-name=workbuddy] {
   background: linear-gradient(180deg, transparent 0 40%, color-mix(in srgb, var(--wb-surface) 74%, transparent) 100%) !important;
 }
 
+/* 新建任务/首页路由（5.7.x 起独立的 main.wb-home-route，不走 [data-view-id] 结构）：
+   默认不透明深底 rgb(20,20,20)，会完全盖住 #root 背景图，处理同 main-content */
+.wb-home-route {
+  background: linear-gradient(180deg, transparent 0 40%, color-mix(in srgb, var(--wb-surface) 74%, transparent) 100%) !important;
+}
+
 /* 详情面板半透明磨砂 */
 [data-view-id=detail-panel] {
   background: color-mix(in srgb, var(--wb-surface) 88%, transparent) !important;
