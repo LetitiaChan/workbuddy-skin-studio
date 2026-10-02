@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "misty-fir-rain",
+  "name": "下雨-冷杉",
+  "hero": "hero.webp",
+  "colors": {
+    "accent": "#353724",
+    "secondary": "#7b7d71",
+    "surface": "#121215",
+    "text": "#d7d9dc"
+  }
+}
