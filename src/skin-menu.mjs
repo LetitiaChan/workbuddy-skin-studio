@@ -54,16 +54,20 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   document.getElementById(data.menuId)?.remove();
   const root = document.createElement("div");
   root.id = data.menuId;
-  root.style.cssText = "position:fixed;top:48px;right:16px;z-index:2147483000;font:500 13px/1.4 system-ui;user-select:none;";
+  // no-drag：新建任务页等路由的 workbuddy-topbar 声明了 -webkit-app-region:drag
+  // （矩形 240,30-1838,86 覆盖按钮位置），真实鼠标点击会被吞成窗口拖动；
+  // DOM 命中测试与程序化 click 均绕过该机制，只有真实输入可复现
+  root.style.cssText = "position:fixed;top:48px;right:16px;z-index:2147483000;font:500 13px/1.4 system-ui;user-select:none;-webkit-app-region:no-drag;app-region:no-drag;";
 
   const button = document.createElement("button");
   button.type = "button";
   button.textContent = "\\u{1F3A8}";
   button.title = "WorkBuddy Skin Studio";
-  button.style.cssText = "display:block;margin-left:auto;width:38px;height:38px;border-radius:50%;border:1px solid rgba(0,0,0,.18);background:rgba(255,255,255,.92);backdrop-filter:blur(10px);box-shadow:0 3px 12px rgba(0,0,0,.24);cursor:pointer;font-size:19px;padding:0;";
+  // 无底图：去掉圆底/描边/阴影/磨砂，只留色盘图标本体；line-height 保证垂直居中
+  button.style.cssText = "display:block;margin-left:auto;width:38px;height:38px;border:0;background:transparent;cursor:pointer;font-size:19px;padding:0;line-height:38px;";
 
   const panel = document.createElement("div");
-  panel.style.cssText = "display:none;margin-top:8px;min-width:200px;padding:6px;border-radius:12px;border:1px solid rgba(0,0,0,.1);background:rgba(255,255,255,.94);backdrop-filter:blur(16px);box-shadow:0 10px 30px rgba(0,0,0,.18);color:#17344f;";
+  panel.style.cssText = "display:none;margin-top:8px;min-width:200px;padding:6px;border-radius:12px;border:1px solid rgba(0,0,0,.1);background:rgba(255,255,255,.94);backdrop-filter:blur(16px);box-shadow:0 10px 30px rgba(0,0,0,.18);color:#17344f;-webkit-app-region:no-drag;app-region:no-drag;";
 
   const rows = new Map();
   const paint = (id) => {
