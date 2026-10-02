@@ -54,6 +54,11 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   window.__workbuddySkinObserver?.disconnect();
   window.__workbuddySkinLayoutObserver?.disconnect();
 
+  // 统一诊断日志：切换/加载失败时控制台输出阶段名+主题 id，便于定位「点了没反应」类问题
+  const logError = (stage, detail, error) => {
+    console.error("WorkBuddy Skin：" + stage + (detail ? "（" + detail + "）" : ""), error);
+  };
+
   let style = document.getElementById(data.styleId);
   if (!style) {
     style = document.createElement("style");
@@ -129,7 +134,10 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     item.append(dot, text);
     item.addEventListener("mouseenter", () => { if (item.style.fontWeight !== "700") item.style.background = "rgba(0,0,0,.05)"; });
     item.addEventListener("mouseleave", () => paint(document.documentElement.dataset.workbuddySkin ?? null));
-    item.addEventListener("click", () => onPick(item));
+    // 兜底：onPick（切换/上传入口）任何同步异常都不允许打断菜单，统一落日志
+    item.addEventListener("click", () => {
+      try { onPick(item); } catch (error) { logError("主题列表项点击处理失败", label, error); }
+    });
     if (before) panel.insertBefore(item, before); else panel.appendChild(item);
     return item;
   };
@@ -203,27 +211,38 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   };
   const setTheme = (id) => {
     const theme = data.themes.find((candidate) => candidate.id === id);
-    if (!theme) return;
-    releaseHeroBlob();
-    style.textContent = theme.css;
-    document.documentElement.dataset.workbuddySkin = theme.id;
-    applyMode(theme.surface);
-    persistActive(theme.id);
-    paint(theme.id);
-    // 内置视频主题：海报帧 CSS 已就位，按主题 id 从 IndexedDB 取视频挂 <video> 固定层；
-    // 普通图片主题则释放上一个视频层
-    if (theme.kind === "video") mountVideo(theme);
-    else releaseVideo();
+    if (!theme) {
+      console.warn("WorkBuddy Skin：主题不在菜单列表中，切换已忽略：" + id);
+      return;
+    }
+    try {
+      releaseHeroBlob();
+      style.textContent = theme.css;
+      document.documentElement.dataset.workbuddySkin = theme.id;
+      applyMode(theme.surface);
+      persistActive(theme.id);
+      paint(theme.id);
+      // 内置视频主题：海报帧 CSS 已就位，按主题 id 从 IndexedDB 取视频挂 <video> 固定层；
+      // 普通图片主题则释放上一个视频层
+      if (theme.kind === "video") mountVideo(theme);
+      else releaseVideo();
+    } catch (error) {
+      logError("切换主题失败", id, error);
+    }
   };
   const clearTheme = () => {
-    releaseHeroBlob();
-    releaseVideo();
-    style.textContent = "";
-    delete document.documentElement.dataset.workbuddySkin;
-    // 恢复原生：pin:false 解除模式钉住，把类与属性的所有权还给应用
-    applyMode("#ffffff", { pin: false });
-    persistActive(null);
-    paint(null);
+    try {
+      releaseHeroBlob();
+      releaseVideo();
+      style.textContent = "";
+      delete document.documentElement.dataset.workbuddySkin;
+      // 恢复原生：pin:false 解除模式钉住，把类与属性的所有权还给应用
+      applyMode("#ffffff", { pin: false });
+      persistActive(null);
+      paint(null);
+    } catch (error) {
+      logError("恢复原生界面失败", null, error);
+    }
   };
 
   // 视频/动图主题在列表行尾加标注（汉字走双反斜杠 unicode 转义，模板内不直接写中文）
@@ -319,14 +338,33 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   const asCssUrl = (dataUrl) => {
     // 无论走哪条分支都先释放上一张 hero 的 blob：小图返回 data URL 后旧 blob 已无人引用
     releaseHeroBlob();
-    if (dataUrl.length < 256 * 1024) return dataUrl;
+    if (typeof dataUrl !== "string" || dataUrl.length < 256 * 1024) return dataUrl;
+    // localStorage 数据可能被手动改坏：格式/base64 非法时 atob 会抛异常打断切换，
+    // 校验失败一律回退原始 data URL 并落日志（CSS 静默失效好于整次切换崩溃）
     const comma = dataUrl.indexOf(",");
+    if (!dataUrl.startsWith("data:") || comma < 0) {
+      console.warn("WorkBuddy Skin：主题图片数据不是合法 data URL，已跳过 blob 转换");
+      return dataUrl;
+    }
     const mime = dataUrl.slice(5, comma).split(";")[0];
-    const bin = atob(dataUrl.slice(comma + 1));
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    heroBlobUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
-    return heroBlobUrl;
+    const b64 = dataUrl.slice(comma + 1);
+    try {
+      // 大图逐字节 atob 循环会同步阻塞主线程（切换卡顿的主要来源）：
+      // 优先原生 Uint8Array.fromBase64（Chromium 133+），旧内核回退 atob 循环
+      const bytes = typeof Uint8Array.fromBase64 === "function"
+        ? Uint8Array.fromBase64(b64)
+        : (() => {
+            const bin = atob(b64);
+            const out = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+            return out;
+          })();
+      heroBlobUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
+      return heroBlobUrl;
+    } catch (error) {
+      console.warn("WorkBuddy Skin：主题图片 base64 解码失败，回退原始 data URL", error);
+      return dataUrl;
+    }
   };
 
   // ---- 视频皮肤（MP4）：CSS 无法播放视频背景，做法是海报帧作 CSS 底图兜底，
@@ -350,6 +388,9 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
         req.onupgradeneeded = () => { req.result.createObjectStore("videos"); };
         req.onsuccess = () => { this.db = req.result; resolve(this.db); };
         req.onerror = () => reject(req.error);
+        // 旧连接未关闭（如页面刷新残留）时 open 会被 block：Promise 挂起但 onerror
+        // 不触发，表现为「切换视频主题后毫无反应」——只落日志，保持等待（阻塞解除后仍可用）
+        req.onblocked = () => console.warn("WorkBuddy Skin：IndexedDB 打开被阻塞（可能存在未关闭的旧连接），视频皮肤加载将延迟");
       });
     },
     txn(mode, run) {
@@ -358,6 +399,8 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
         const req = run(tx.objectStore("videos"));
         tx.oncomplete = () => resolve(req?.result);
         tx.onerror = () => reject(tx.error);
+        // 事务中止既不触发 oncomplete 也不触发 onerror，缺了它 Promise 会永远挂起
+        tx.onabort = () => reject(tx.error ?? new Error("IndexedDB transaction aborted"));
       }));
     },
     put(id, blob) { return this.txn("readwrite", (store) => store.put(blob, id)); },
@@ -377,7 +420,8 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
       video.autoplay = true; video.muted = true; video.loop = true; video.playsInline = true;
       video.style.cssText = "width:100%;height:100%;object-fit:cover;object-position:right center;display:block;";
       video.src = url;
-      video.play().catch(() => {});
+      // 自动播放被策略拦截不算故障（ muted+playsInline 下少见），但静默吞掉不利于诊断
+      video.play().catch((error) => console.warn("WorkBuddy Skin：视频自动播放失败（" + theme.id + "）", error));
       const overlay = document.createElement("div");
       overlay.style.cssText = "position:absolute;inset:0;background:"
         + "linear-gradient(90deg, color-mix(in srgb, var(--wb-surface) 72%, transparent) 0 14%, transparent 30%),"
@@ -389,11 +433,11 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     const cached = videoUrlCache.get(theme.id);
     if (cached) { attach(cached); return; }
     videoStore.get(theme.id).then((blob) => {
-      if (!blob) { console.warn("WorkBuddy Skin：视频数据缺失（IndexedDB 中未找到），请重新上传"); return; }
+      if (!blob) { console.warn("WorkBuddy Skin：视频数据缺失（IndexedDB 中未找到，主题：" + theme.id + "），请重新上传"); return; }
       const url = URL.createObjectURL(blob);
       videoUrlCache.set(theme.id, url);
       attach(url);
-    }).catch((error) => console.warn("WorkBuddy Skin：视频皮肤加载失败", error));
+    }).catch((error) => console.warn("WorkBuddy Skin：视频皮肤加载失败（" + theme.id + "）", error));
   };
 
   // 旧格式 colors（扁平 surface/text）按 accent 重算浅/深两套，无损升级；新格式原样返回
@@ -435,6 +479,13 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   };
 
   const applyCustomTheme = (theme) => {
+    try {
+      applyCustomThemeUnsafe(theme);
+    } catch (error) {
+      logError("应用自定义主题失败", theme?.id, error);
+    }
+  };
+  const applyCustomThemeUnsafe = (theme) => {
     const flat = effectiveColors(theme);
     if (theme.kind === "video") {
       releaseHeroBlob();

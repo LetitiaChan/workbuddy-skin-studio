@@ -6,7 +6,9 @@ const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".av
 const MAX_ANIMATED_DIMENSION = 1920;
 
 // 只读文件头探测动图分辨率，超限拒绝（动图不经压缩直接注入，需卡上限）
-// GIF：宽高在头部 6-9 字节（LE uint16）；动态 WebP：VP8X chunk 画布尺寸在 24-29 字节
+// GIF：宽高在头部 6-9 字节（LE uint16）；注意此处不分辨单帧/多帧，GIF 一律按动图处理
+// （当前内置主题均为 WebP，无实际影响；仅影响自定义 GIF 的「动图」标注与尺寸上限）；
+// 动态 WebP：VP8X chunk 画布尺寸在 24-29 字节
 // （24 位 LE，存值 = 实际 - 1），flags 字节 bit 0x02 为动画标记；
 // 动态 AVIF：ftyp 主品牌为 avis（静态为 avif），宽高在 meta 内的 ispe box
 // （BE uint32 宽高，位于 "ispe" 标记 +8/+12 处），在前 4KB 内搜索即可覆盖常规文件
