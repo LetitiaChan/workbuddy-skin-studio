@@ -22,10 +22,11 @@
 一个给 WorkBuddy 桌面端换肤的工具。通过本机回环 CDP 把主题实时注入 WorkBuddy 界面，不修改 `app.asar`，不破坏应用签名，也不需要为每次 WorkBuddy 更新重新适配。
 
 - **一键切换**：应用皮肤后 WorkBuddy 右上角出现 🎨 菜单，所有已装主题和原生界面即点即换，零等待
-- **自定义上传**：菜单里选「＋ 自定义图片」直接上传本地图片，自动按图片风格取色（主色、辅色、面板底色、文字色），即点即换；最多 6 个自定义槽位各自保留，行尾 × 单独删除
+- **自定义上传**：菜单里选「＋ 自定义皮肤」直接上传本地图片或 MP4 视频，自动按画面风格取色（主色、辅色、面板底色、文字色），即点即换；明暗默认按**主色亮度**自动判定，点行尾「自/浅/深」按钮可强制浅色或深色；最多 10 个自定义槽位各自保留，行尾 × 单独删除
 - **一张图片就是一个主题**：任意 PNG、JPG、JPEG、WebP 直接生成皮肤（配色 + 背景底图）
 - **动图背景**：GIF、动态 WebP、动态 AVIF 原样注入、保留动画播放（跳过 canvas 重编码，仍用第一帧取色）；动图限 3MB、最长边 1920px（体积为适配 localStorage 配额，分辨率为避免拖慢渲染）
-- **10 个内置预设**：Miku、原神 ×2、鸣潮 ×2、火影忍者 ×2、恋与深空 ×2
+- **视频背景**：MP4（H.264）抽帧取色，海报帧作 CSS 底图兜底，视频以固定背景层循环静音播放；原始视频存 IndexedDB（不占 localStorage 配额），限 30MB
+- **15 个内置预设**：Miku、原神 ×2、鸣潮 ×2、火影忍者 ×2、恋与深空 ×2、猫鼠、海滩夜晚、小可爱、冷杉雨、月夜、温泉雪
 - **深浅色自动适配**：根据主题配色的 surface 明度自动切换 WorkBuddy 的 `data-vscode-theme-kind`，让 VS Code 原生控件（输入框、按钮等）跟着深浅色变
 - **双平台**：macOS（`.command`）+ Windows（`.ps1`）
 - **随时还原**：暂停皮肤或切回原生界面，官方安装包始终原封不动
@@ -67,6 +68,8 @@ node src/cli.mjs apply --theme genshin-night
 .\scripts\find-workbuddy.ps1
 ```
 
+也可以直接双击根目录的 `Start.bat`（内部调用 `apply.ps1`，行为一致）；命令行带主题 id 使用：`Start.bat genshin-night`。
+
 > Windows 首次运行若报执行策略错误，执行：
 > `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
 
@@ -82,15 +85,16 @@ node src/cli.mjs apply --theme genshin-night
 .\scripts\pause.ps1
 ```
 
-> 注意：WorkBuddy 手动重启后注入会消失（CDP 方案的天性），重跑一次 apply 即可回来。
+> 注意：WorkBuddy 手动重启后注入会消失（CDP 方案的天性），重跑一次 apply 即可回来——不带主题参数时会自动恢复你上次在 🎨 菜单里选的皮肤（含自定义皮肤）。
 
 ## 主题切换菜单
 
 应用皮肤后，WorkBuddy 右上角（titlebar 下方）会出现 🎨 按钮：
 
-- 点击展开主题列表，点击任意主题即时切换
-- 「＋ 自定义图片」上传本地图片生成主题（canvas 自动取色 + 压缩成 webp；GIF/动态 WebP/动态 AVIF 保留动画不压缩，限 3MB、最长边 1920px）
-- 自定义主题最多 6 个槽位，每个独立持久化（localStorage），行尾 × 单独删除
+- 点击展开主题列表，点击任意主题即时切换；点击面板外任意位置自动收起
+- 按钮悬浮在原生按钮行正下方、紧贴顶部工具栏下沿，水平位置跟随原生按钮行右缘（右侧详情栏打开时自动左移），不与原生按钮重叠
+- 「＋ 自定义皮肤」上传本地图片或 MP4 视频生成主题（图片 canvas 自动取色 + 压缩成 webp；GIF/动态 WebP/动态 AVIF 保留动画不压缩，限 3MB、最长边 1920px；MP4 抽帧取色、海报帧兜底、循环静音播放，原始视频存 IndexedDB，限 30MB）
+- 自定义主题最多 10 个槽位，每个独立持久化（元数据在 localStorage，视频文件在 IndexedDB），行尾 × 单独删除
 - 「原生界面」恢复官方外观
 
 ## 自定义主题
@@ -102,7 +106,7 @@ node src/cli.mjs create --image "/path/to/hero.webp" --name "My Skin"
 node src/cli.mjs apply --theme my-skin
 ```
 
-或直接在 🎨 菜单里选「＋ 自定义图片」上传，自动取色并持久化（localStorage）。
+或直接在 🎨 菜单里选「＋ 自定义皮肤」上传图片或 MP4 视频，自动取色并持久化（图片在 localStorage，视频在 IndexedDB）。
 
 ## 极简主题格式
 
@@ -142,15 +146,20 @@ node src/cli.mjs doctor                            # 检查环境（app 路径�
 | 主题 id | 名称 | 风格 |
 |---|---|---|
 | `miku-light` | Miku Light | 青绿粉 · 浅色 |
-| `miku-488137` | Miku 488137 | 青绿 · 高精度 |
 | `genshin-dawn` | 原神 · 晨曦 | 蓝 · 浅色 |
 | `genshin-night` | 原神 · 星夜 | 金 · 深色 |
 | `deepspace-dawn` | 恋与深空 · 晨曦 | 紫 · 浅色 |
 | `deepspace-star` | 恋与深空 · 星辰 | 紫 · 深色 |
-| `naruto-hokage` | 火影 · 鸣人 | 橙 · 浅色 |
+| `naruto-hokage` | 火影 · 鸣人 | 橙 · 深色 |
 | `naruto-sasuke` | 火影 · 佐助 | 红 · 深色 |
-| `wuthering-echo` | 鸣潮 · 共鸣 | 青 · 浅色 |
-| `wuthering-tide` | 鸣潮 · 声骸 | 青 · 浅色 |
+| `wuthering-echo` | 鸣潮 · 共鸣 | 青 · 深色 |
+| `wuthering-tide` | 鸣潮 · 声骸 | 青 · 深色 |
+| `mice-cat` | 猫鼠 · 夜巡 | 金 · 深色 |
+| `beach-night` | 海滩夜晚 | 深蓝 · 深色 |
+| `cutie` | 小可爱 | 米白 · 浅色 |
+| `misty-fir-rain` | 下雨-冷杉 | 墨绿 · 深色 |
+| `moonlit-night` | 月夜 | 深蓝 · 深色 |
+| `snow-animals` | 下雪-温泉 | 蓝灰 · 深色 |
 
 ## 设计边界
 

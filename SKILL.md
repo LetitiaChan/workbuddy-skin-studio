@@ -96,19 +96,24 @@ No official files are touched.
 ## Choosing a theme
 
 - List available themes: `node src/cli.mjs list` (macOS) / same via PowerShell.
-- Built-ins include `miku-light`, `miku-488137`, `genshin-dawn`, `genshin-night`,
+- Built-ins include `miku-light`, `genshin-dawn`, `genshin-night`,
   `deepspace-dawn`, `deepspace-star`, `naruto-hokage`, `naruto-sasuke`,
-  `wuthering-echo`, `wuthering-tide`.
+  `wuthering-echo`, `wuthering-tide`, `mice-cat`, `beach-night`, `cutie`,
+  `misty-fir-rain`, `moonlit-night`, `snow-animals`.
 - If the user names a mood/character (e.g. "dark Genshin"), map it to the
   closest id, or just apply the default and let them pick from the 🎨 menu.
 - Custom image: `node src/cli.mjs create --image "/path/to/hero.webp" --name "My Skin"`
   then `node src/cli.mjs apply --theme my-skin`. The in-app 🎨 menu also supports
-  "＋ 自定义图片" with automatic color extraction. Up to 6 custom-upload slots are
-  kept simultaneously (each persisted and deletable). Animated images (GIF /
-  animated WebP / animated AVIF) are supported: they bypass canvas re-encoding to
-  keep the animation, capped at 3 MB (localStorage quota) and 1920 px longest
-  side (rendering performance) in both the menu and CLI paths. AVIF requires the
-  embedded Chromium to be ≥ 85 (any recent Electron qualifies).
+  "＋ 自定义皮肤" (images and MP4 video) with automatic color extraction. Up to 10
+  custom-upload slots are kept simultaneously (each persisted and deletable).
+  Animated images (GIF / animated WebP / animated AVIF) are supported: they bypass
+  canvas re-encoding to keep the animation, capped at 3 MB (localStorage quota)
+  and 1920 px longest side (rendering performance) in both the menu and CLI paths.
+  MP4 (H.264) videos are supported in the menu path: a sampled frame drives color
+  extraction, a poster frame backs the CSS layer, the video plays muted/looped as
+  a fixed background layer, and the raw file is stored in IndexedDB (capped at
+  30 MB) instead of localStorage. AVIF requires the embedded Chromium to be ≥ 85
+  (any recent Electron qualifies).
 
 ## Pause / restore to native
 
