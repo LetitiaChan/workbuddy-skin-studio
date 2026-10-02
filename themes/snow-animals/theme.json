@@ -2,11 +2,12 @@
   "schemaVersion": 1,
   "id": "snow-animals",
   "name": "下雪-温泉",
-  "hero": "hero.webp",
+  "hero": "hero.mp4",
+  "poster": "hero.webp",
   "colors": {
     "accent": "#6080a6",
     "secondary": "#cd9989",
-    "surface": "#181c27",
-    "text": "#dee4ef"
+    "surface": "#eef2f8",
+    "text": "#2a3444"
   }
 }

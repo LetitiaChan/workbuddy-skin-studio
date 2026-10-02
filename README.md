@@ -26,7 +26,7 @@
 - **一张图片就是一个主题**：任意 PNG、JPG、JPEG、WebP 直接生成皮肤（配色 + 背景底图）
 - **动图背景**：GIF、动态 WebP、动态 AVIF 原样注入、保留动画播放（跳过 canvas 重编码，仍用第一帧取色）；动图限 3MB、最长边 1920px（体积为适配 localStorage 配额，分辨率为避免拖慢渲染）
 - **视频背景**：MP4（H.264）抽帧取色，海报帧作 CSS 底图兜底，视频以固定背景层循环静音播放；原始视频存 IndexedDB（不占 localStorage 配额），限 30MB
-- **15 个内置预设**：Miku、原神 ×2、鸣潮 ×2、火影忍者 ×2、恋与深空 ×2、猫鼠、海滩夜晚、小可爱、冷杉雨、月夜、温泉雪
+- **15 个内置预设**：Miku、原神 ×2、鸣潮 ×2、火影忍者 ×2、恋与深空 ×2、猫鼠、海滩夜晚、小可爱、冷杉雨（MP4 视频）、月夜、温泉雪（MP4 视频）
 - **深浅色自动适配**：根据主题配色的 surface 明度自动切换 WorkBuddy 的 `data-vscode-theme-kind`，让 VS Code 原生控件（输入框、按钮等）跟着深浅色变
 - **双平台**：macOS（`.command`）+ Windows（`.ps1`）
 - **随时还原**：暂停皮肤或切回原生界面，官方安装包始终原封不动
@@ -92,6 +92,7 @@ node src/cli.mjs apply --theme genshin-night
 应用皮肤后，WorkBuddy 右上角（titlebar 下方）会出现 🎨 按钮：
 
 - 点击展开主题列表，点击任意主题即时切换；点击面板外任意位置自动收起
+- 视频主题与动图主题（GIF / 动态 WebP / 动态 AVIF / MP4）在列表行尾带「动态」「动图」标注
 - 按钮悬浮在原生按钮行正下方、紧贴顶部工具栏下沿，水平位置跟随原生按钮行右缘（右侧详情栏打开时自动左移），不与原生按钮重叠
 - 「＋ 自定义皮肤」上传本地图片或 MP4 视频生成主题（图片 canvas 自动取色 + 压缩成 webp；GIF/动态 WebP/动态 AVIF 保留动画不压缩，限 3MB、最长边 1920px；MP4 抽帧取色、海报帧兜底、循环静音播放，原始视频存 IndexedDB，限 30MB）
 - 自定义主题最多 10 个槽位，每个独立持久化（元数据在 localStorage，视频文件在 IndexedDB），行尾 × 单独删除
@@ -125,10 +126,11 @@ node src/cli.mjs apply --theme my-skin
 }
 ```
 
-只有 `schemaVersion`、`id`、`name` 和 `hero` 必填。图片必须位于主题目录内，颜色和文案（`copy`）都可省略。
+只有 `schemaVersion`、`id`、`name` 和 `hero` 必填。素材必须位于主题目录内，颜色和文案（`copy`）都可省略。
 
 - `surface` 的明度决定 light/dark 模式（亮度 > 140 为 light），自动切换 WorkBuddy 的 `data-vscode-theme-kind`
-- `hero` 支持 PNG / JPG / JPEG / WebP / GIF / AVIF（GIF、动态 WebP、动态 AVIF 保留动画播放；AVIF 需 Chromium 85+）
+- `hero` 支持 PNG / JPG / JPEG / WebP / GIF / AVIF / MP4（GIF、动态 WebP、动态 AVIF 保留动画播放；AVIF 需 Chromium 85+）
+- `hero` 为 MP4（H.264，限 30MB）时是视频主题：必须再配 `poster` 海报帧图片作 CSS 底图兜底，视频在注入时预置进渲染进程 IndexedDB（按字节数判重，重复 apply 不重复传输），以固定背景层循环静音播放。示例：`"hero": "hero.mp4", "poster": "hero.webp"`
 
 ## 命令行
 
@@ -157,9 +159,9 @@ node src/cli.mjs doctor                            # 检查环境（app 路径�
 | `mice-cat` | 猫鼠 · 夜巡 | 金 · 深色 |
 | `beach-night` | 海滩夜晚 | 深蓝 · 深色 |
 | `cutie` | 小可爱 | 米白 · 浅色 |
-| `misty-fir-rain` | 下雨-冷杉 | 墨绿 · 深色 |
+| `misty-fir-rain` | 下雨-冷杉 | 墨绿 · 深色 · MP4 视频 |
 | `moonlit-night` | 月夜 | 深蓝 · 深色 |
-| `snow-animals` | 下雪-温泉 | 蓝灰 · 深色 |
+| `snow-animals` | 下雪-温泉 | 浅蓝 · 浅色 · MP4 视频 |
 
 ## 设计边界
 

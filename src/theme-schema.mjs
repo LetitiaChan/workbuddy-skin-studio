@@ -9,11 +9,13 @@ import {
   win32,
 } from "node:path";
 
-import { THEME_SCHEMA_VERSION } from "./constants.mjs";
+import { MAX_THEME_VIDEO_BYTES, THEME_SCHEMA_VERSION } from "./constants.mjs";
 
 const COLOR_KEYS = ["accent", "secondary", "surface", "text"];
 const COPY_KEYS = ["brand", "headline", "tagline"];
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".avifs"]);
+const VIDEO_EXTENSIONS = new Set([".mp4"]);
+const HERO_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, ...VIDEO_EXTENSIONS]);
 const HEX_COLOR = /^#[0-9A-F]{6}$/i;
 const THEME_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const DEFAULT_COLORS = {
@@ -37,20 +39,36 @@ function isInside(root, candidate) {
   );
 }
 
-function normalizeHero(hero) {
+function normalizeMediaPath(value, label, extensions, types) {
   if (
-    typeof hero !== "string" ||
-    !hero.trim() ||
-    isAbsolute(hero) ||
-    win32.isAbsolute(hero) ||
-    hero.split(/[\\/]+/).includes("..")
+    typeof value !== "string" ||
+    !value.trim() ||
+    isAbsolute(value) ||
+    win32.isAbsolute(value) ||
+    value.split(/[\\/]+/).includes("..")
   ) {
-    throw new Error("theme hero must be a relative path inside the theme directory");
+    throw new Error(`theme ${label} must be a relative path inside the theme directory`);
   }
-  if (!IMAGE_EXTENSIONS.has(extname(hero).toLowerCase())) {
-    throw new Error("theme hero must be PNG, JPEG, WebP, GIF, or AVIF");
+  if (!extensions.has(extname(value).toLowerCase())) {
+    throw new Error(`theme ${label} must be ${types}`);
   }
-  return hero;
+  return value;
+}
+
+function normalizeHero(hero) {
+  return normalizeMediaPath(hero, "hero", HERO_EXTENSIONS, "PNG, JPEG, WebP, GIF, AVIF, or MP4");
+}
+
+// 视频主题（hero 为 MP4）必须配 poster 海报帧图片：作 CSS 底图兜底，
+// 视频异步挂载/解码失败时不至于裸奔；图片 hero 不允许带 poster
+function normalizePoster(poster, hero) {
+  const isVideo = VIDEO_EXTENSIONS.has(extname(hero).toLowerCase());
+  if (!isVideo) {
+    if (poster !== undefined) throw new Error("theme poster is only valid for video heroes");
+    return null;
+  }
+  if (poster === undefined) throw new Error("video hero requires a poster image");
+  return normalizeMediaPath(poster, "poster", IMAGE_EXTENSIONS, "PNG, JPEG, WebP, GIF, or AVIF");
 }
 
 function normalizeColors(colors) {
@@ -99,37 +117,53 @@ export function validateThemeManifest(input) {
     throw new Error("theme name must be a non-empty string");
   }
 
+  const hero = normalizeHero(input.hero);
   return {
     schemaVersion: THEME_SCHEMA_VERSION,
     id: input.id,
     name: input.name.trim(),
-    hero: normalizeHero(input.hero),
+    hero,
+    poster: normalizePoster(input.poster, hero),
     colors: normalizeColors(input.colors),
     copy: normalizeCopy(input.copy),
   };
+}
+
+async function resolveMediaFile(root, mediaPath, label) {
+  const filePath = resolve(root, mediaPath);
+  if (!isInside(root, filePath)) {
+    throw new Error(`theme ${label} escapes the theme directory`);
+  }
+
+  const [realRoot, realFilePath] = await Promise.all([
+    realpath(root),
+    realpath(filePath),
+  ]);
+  if (!isInside(realRoot, realFilePath)) {
+    throw new Error(`theme ${label} escapes the theme directory`);
+  }
+
+  const info = await lstat(filePath);
+  if (!info.isFile() || info.size < 1) {
+    throw new Error(`theme ${label} must be a non-empty file`);
+  }
+  return { path: filePath, size: info.size };
 }
 
 export async function loadTheme(themeDir) {
   const root = resolve(themeDir);
   const raw = JSON.parse(await readFile(join(root, "theme.json"), "utf8"));
   const manifest = validateThemeManifest(raw);
-  const heroPath = resolve(root, manifest.hero);
-  if (!isInside(root, heroPath)) {
-    throw new Error("theme hero escapes the theme directory");
-  }
 
-  const [realRoot, realHeroPath] = await Promise.all([
-    realpath(root),
-    realpath(heroPath),
-  ]);
-  if (!isInside(realRoot, realHeroPath)) {
-    throw new Error("theme hero escapes the theme directory");
+  const hero = await resolveMediaFile(root, manifest.hero, "hero");
+  if (VIDEO_EXTENSIONS.has(extname(manifest.hero).toLowerCase()) && hero.size > MAX_THEME_VIDEO_BYTES) {
+    throw new Error(
+      `theme hero video exceeds the ${MAX_THEME_VIDEO_BYTES / 1024 / 1024}MB limit`,
+    );
   }
+  const poster = manifest.poster
+    ? await resolveMediaFile(root, manifest.poster, "poster")
+    : null;
 
-  const info = await lstat(heroPath);
-  if (!info.isFile() || info.size < 1) {
-    throw new Error("theme hero must be a non-empty file");
-  }
-
-  return { manifest, heroPath, root };
+  return { manifest, heroPath: hero.path, posterPath: poster?.path ?? null, root };
 }

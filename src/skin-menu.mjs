@@ -11,6 +11,10 @@ export const CSS_SENTINELS = {
   text: "#0a0b0c",
 };
 
+// 视频皮肤（内置/自定义共用）：<video> 固定层挂 #root 之下，需要 isolate 叠层上下文。
+// 内置视频主题在 Node 端把它追加到 CSS 末尾，自定义视频主题在客户端拼接，同源一份避免漂移
+export const VIDEO_LAYER_CSS = "\n#root { isolation: isolate !important; }\n";
+
 export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTemplate = "" }) {
   if (!Array.isArray(entries) || entries.length === 0) {
     throw new Error("皮肤菜单至少需要一个主题");
@@ -23,6 +27,7 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
       accent: HEX_COLOR.test(entry.accent ?? "") ? entry.accent : DEFAULT_ACCENT,
       surface: typeof entry.surface === "string" ? entry.surface : "#ffffff",
       css: entry.css,
+      kind: entry.kind === "video" || entry.kind === "animated" ? entry.kind : "image",
     };
   });
   if (activeId !== null && !themes.some((theme) => theme.id === activeId)) {
@@ -200,12 +205,15 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     const theme = data.themes.find((candidate) => candidate.id === id);
     if (!theme) return;
     releaseHeroBlob();
-    releaseVideo();
     style.textContent = theme.css;
     document.documentElement.dataset.workbuddySkin = theme.id;
     applyMode(theme.surface);
     persistActive(theme.id);
     paint(theme.id);
+    // 内置视频主题：海报帧 CSS 已就位，按主题 id 从 IndexedDB 取视频挂 <video> 固定层；
+    // 普通图片主题则释放上一个视频层
+    if (theme.kind === "video") mountVideo(theme);
+    else releaseVideo();
   };
   const clearTheme = () => {
     releaseHeroBlob();
@@ -218,8 +226,22 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     paint(null);
   };
 
+  // 视频/动图主题在列表行尾加标注（汉字走双反斜杠 unicode 转义，模板内不直接写中文）
+  const KIND_BADGE = { video: "\\u52a8\\u6001", animated: "\\u52a8\\u56fe" };
+  const kindBadge = (kind) => {
+    const label = KIND_BADGE[kind];
+    if (!label) return null;
+    const tag = document.createElement("span");
+    tag.textContent = label;
+    tag.style.cssText = "flex:none;margin-left:auto;font-size:10px;line-height:14px;padding:0 4px;border-radius:4px;border:1px solid rgba(0,0,0,.18);color:rgba(0,0,0,.5);";
+    return tag;
+  };
+
   for (const theme of data.themes) {
-    rows.set(theme.id, row(theme.name, theme.accent, () => { setTheme(theme.id); panel.style.display = "none"; }));
+    const item = row(theme.name, theme.accent, () => { setTheme(theme.id); panel.style.display = "none"; });
+    const badge = kindBadge(theme.kind);
+    if (badge) item.appendChild(badge);
+    rows.set(theme.id, item);
   }
 
   // ---- 自定义皮肤：本地选图/选视频 -> 压缩 -> 取色 -> 生成 CSS -> 持久化（多槽位） ----
@@ -309,8 +331,9 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
 
   // ---- 视频皮肤（MP4）：CSS 无法播放视频背景，做法是海报帧作 CSS 底图兜底，
   // 另挂 <video> 固定层透出动画；视频体积普遍超 localStorage 配额，
-  // 原始文件存 IndexedDB（元数据仍走 localStorage），blob URL 会话内缓存复用 ----
-  const VIDEO_LAYER_CSS = "\\n#root { isolation: isolate !important; }\\n";
+  // 原始文件存 IndexedDB（自定义皮肤元数据仍走 localStorage；内置视频主题由
+  // Node 端注入时按主题 id 预置进同一个库），blob URL 会话内缓存复用 ----
+  const VIDEO_LAYER_CSS = ${JSON.stringify(VIDEO_LAYER_CSS)};
   const MAX_VIDEO_BYTES = 30 * 1024 * 1024;
   let videoLayer = null;
   const videoUrlCache = new Map();
@@ -452,6 +475,9 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     }, uploadRow);
     const text = customRow.querySelector("span + span");
     text.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    // 自定义视频/动图主题同样加标注（text 已 flex:1，badge 的 margin-left:auto 无副作用）
+    const badge = kindBadge(theme.kind);
+    if (badge) customRow.appendChild(badge);
     // 明暗模式三选：自（自动按主色亮度）→ 浅 → 深 循环，持久化；正应用此主题时立即重渲染
     const MODE_SEQUENCE = ["auto", "light", "dark"];
     const MODE_LABEL = { auto: "\\u81ea", light: "\\u6d45", dark: "\\u6df1" };
@@ -571,6 +597,7 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
         dataUrl: heroUrl,
         colors: extractPalette(sample),
         mode: "auto",
+        ...(animated ? { kind: "animated" } : {}),
       };
       saveCustoms([...existing, theme]);
       applyCustomTheme(theme);

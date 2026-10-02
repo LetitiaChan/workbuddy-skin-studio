@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "id": "miku-light",
   "name": "Miku light",
+  "order": -1,
   "hero": "hero.webp",
   "logo": "logo.webp",
   "polaroid": "polaroid.webp",

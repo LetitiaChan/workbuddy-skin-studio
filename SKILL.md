@@ -160,7 +160,8 @@ renderer hint `renderer/index.html`.
 - `src/constants.mjs`, `src/theme-schema.mjs`, `src/theme-store.mjs` — config & theme model.
 - `scripts/apply.command` / `pause.command` — macOS launchers.
 - `scripts/apply.ps1` / `pause.ps1` / `find-workbuddy.ps1` — Windows launchers.
-- `themes/` — 10 built-in theme folders (`theme.json` + `hero.webp`).
+- `themes/` — 15 built-in theme folders (`theme.json` + `hero.webp`; video themes use
+  `hero.mp4` + `poster` image, e.g. `misty-fir-rain`, `snow-animals`).
 - `README.md` — full human-readable documentation.
 
 ## One-line summary for the user

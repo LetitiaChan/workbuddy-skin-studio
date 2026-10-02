@@ -10,7 +10,7 @@ const MAX_ANIMATED_DIMENSION = 1920;
 // （24 位 LE，存值 = 实际 - 1），flags 字节 bit 0x02 为动画标记；
 // 动态 AVIF：ftyp 主品牌为 avis（静态为 avif），宽高在 meta 内的 ispe box
 // （BE uint32 宽高，位于 "ispe" 标记 +8/+12 处），在前 4KB 内搜索即可覆盖常规文件
-async function probeAnimatedSize(imagePath, extension) {
+export async function probeAnimatedSize(imagePath, extension) {
   if (![".gif", ".webp", ".avif", ".avifs"].includes(extension)) return null;
   const handle = await open(imagePath, "r");
   try {
@@ -118,5 +118,7 @@ export async function listThemes({ roots }) {
       }
     }
   }
-  return themes.sort((a, b) => a.name.localeCompare(b.name));
+  // order 字段可选：数值小的排前，缺省按 0 处理，同值再按名称 locale 排序
+  const rank = (theme) => (Number.isFinite(theme.order) ? theme.order : 0);
+  return themes.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
 }
