@@ -35,8 +35,10 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     themes,
     cssTemplate,
     sentinels: CSS_SENTINELS,
-    customId: "custom-upload",
-    storageKey: "workbuddyCustomTheme",
+    customPrefix: "custom-",
+    storageKey: "workbuddyCustomThemes",
+    legacyKey: "workbuddyCustomTheme",
+    maxCustomSlots: 6,
   });
 
   return `(() => {
@@ -124,14 +126,14 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     rows.set(theme.id, row(theme.name, theme.accent, () => { setTheme(theme.id); panel.style.display = "none"; }));
   }
 
-  // ---- 自定义图片：本地选图 -> 压缩 -> 取色 -> 生成 CSS -> 持久化 ----
-  const buildCustomCss = (dataUrl, colors) => data.cssTemplate
+  // ---- 自定义图片：本地选图 -> 压缩 -> 取色 -> 生成 CSS -> 持久化（多槽位） ----
+  const buildCustomCss = (dataUrl, colors, themeId) => data.cssTemplate
     .split(data.sentinels.hero).join(dataUrl)
     .split(data.sentinels.accent).join(colors.accent)
     .split(data.sentinels.secondary).join(colors.secondary)
     .split(data.sentinels.surface).join(colors.surface)
     .split(data.sentinels.text).join(colors.text)
-    .split(data.sentinels.id).join(data.customId);
+    .split(data.sentinels.id).join(themeId);
 
   const hex = (r, g, b) => "#" + [r, g, b].map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("");
   const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
@@ -173,25 +175,44 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     };
   };
 
-  const applyCustomTheme = (theme) => {
-    style.textContent = buildCustomCss(theme.dataUrl, theme.colors);
-    document.documentElement.dataset.workbuddySkin = data.customId;
-    applyMode(theme.colors.surface);
-    ensureCustomRow(theme);
-    paint(data.customId);
+  // Blink 的 CSS 解析器会静默丢弃含超长 data URL 的 background 声明（实测 4MB 动图
+  // 必现，整个 background 简写失效背景消失），大体积 hero 统一转 blob: URL 再注入。
+  // blob URL 生命周期与 renderer 一致，正好匹配注入的生命周期；localStorage 里仍存
+  // data URL，每次应用现场转换，重启后重新注入时自然重建
+  let heroBlobUrl = null;
+  const asCssUrl = (dataUrl) => {
+    if (dataUrl.length < 256 * 1024) return dataUrl;
+    if (heroBlobUrl) URL.revokeObjectURL(heroBlobUrl);
+    const comma = dataUrl.indexOf(",");
+    const mime = dataUrl.slice(5, comma).split(";")[0];
+    const bin = atob(dataUrl.slice(comma + 1));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    heroBlobUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
+    return heroBlobUrl;
   };
 
-  let customRow = null;
-  const deleteCustom = () => {
-    try { localStorage.removeItem(data.storageKey); } catch {}
-    if (document.documentElement.dataset.workbuddySkin === data.customId) clearTheme();
-    customRow?.remove();
-    rows.delete(data.customId);
-    customRow = null;
+  const applyCustomTheme = (theme) => {
+    style.textContent = buildCustomCss(asCssUrl(theme.dataUrl), theme.colors, theme.id);
+    document.documentElement.dataset.workbuddySkin = theme.id;
+    applyMode(theme.colors.surface);
+    ensureCustomRow(theme);
+    paint(theme.id);
+  };
+
+  const deleteCustom = (id) => {
+    const list = loadCustoms().filter((theme) => theme.id !== id);
+    saveCustoms(list);
+    if (document.documentElement.dataset.workbuddySkin === id) clearTheme();
+    rows.get(id)?.remove();
+    rows.delete(id);
   };
   const ensureCustomRow = (theme) => {
-    if (customRow) { customRow.querySelector("span + span").textContent = theme.name; customRow.firstChild.style.background = theme.colors.accent; return; }
-    customRow = row(theme.name, theme.colors.accent, () => { applyCustomTheme(loadCustom() ?? theme); panel.style.display = "none"; }, uploadRow);
+    if (rows.has(theme.id)) return;
+    const customRow = row(theme.name, theme.colors.accent, () => {
+      applyCustomTheme(loadCustoms().find((saved) => saved.id === theme.id) ?? theme);
+      panel.style.display = "none";
+    }, uploadRow);
     const text = customRow.querySelector("span + span");
     text.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
     const del = document.createElement("span");
@@ -200,39 +221,97 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     del.style.cssText = "flex:none;width:18px;height:18px;line-height:18px;text-align:center;border-radius:50%;color:rgba(0,0,0,.45);font-size:14px;";
     del.addEventListener("mouseenter", () => { del.style.background = "rgba(220,60,60,.15)"; del.style.color = "#c03030"; });
     del.addEventListener("mouseleave", () => { del.style.background = "transparent"; del.style.color = "rgba(0,0,0,.45)"; });
-    del.addEventListener("click", (event) => { event.stopPropagation(); deleteCustom(); });
+    del.addEventListener("click", (event) => { event.stopPropagation(); deleteCustom(theme.id); });
     customRow.appendChild(del);
-    rows.set(data.customId, customRow);
+    rows.set(theme.id, customRow);
   };
 
-  const loadCustom = () => {
+  // ---- 动图支持：GIF / 动态 WebP 跳过 canvas 重编码，原数据直接注入 CSS 以保留动画 ----
+  // localStorage 配额约 5MB，base64 膨胀 4/3，故原始动图限制 3MB；
+  // 动图不走 canvas 压缩，需单独卡分辨率上限，避免超大尺寸拖慢渲染
+  const MAX_ANIMATED_BYTES = 3 * 1024 * 1024;
+  const MAX_ANIMATED_DIMENSION = 1920;
+  const sniffAnimated = (dataUrl) => {
+    const comma = dataUrl.indexOf(",");
+    if (comma < 0) return false;
+    const header = dataUrl.slice(0, comma).toLowerCase();
+    if (header.indexOf("image/gif") >= 0) return true;   // GIF 一律保留原数据（GIF87a/89a）
+    if (header.indexOf("image/avif") >= 0) {
+      try {
+        // AVIF 是 ISO BMFF：第 8-11 字节为 ftyp 主品牌，avis = 动图序列，avif = 静态
+        const bytes = atob(dataUrl.slice(comma + 1, comma + 1 + 64));
+        return bytes.length >= 12 && bytes.slice(8, 12) === "avis";
+      } catch { return false; }
+    }
+    if (header.indexOf("image/webp") < 0) return false;
     try {
-      const saved = JSON.parse(localStorage.getItem(data.storageKey) ?? "null");
-      return saved && saved.dataUrl && saved.colors ? saved : null;
-    } catch { return null; }
+      // 动态 WebP 的 VP8X + ANIM chunk 位于文件头部，解码前 400 个 base64 字符足够判定
+      const b64 = dataUrl.slice(comma + 1, comma + 1 + 400);
+      return atob(b64).includes("ANIM");
+    } catch { return false; }
   };
-  const saveCustom = (theme) => {
-    try { localStorage.setItem(data.storageKey, JSON.stringify(theme)); }
-    catch (error) { console.warn("WorkBuddy Skin：自定义主题图片过大，本次生效但重启后不保留", error); }
+
+  // 多槽位持久化：storageKey 存数组；legacyKey（单主题旧格式）读取时自动迁移
+  const loadCustoms = () => {
+    let list = [];
+    try {
+      const parsed = JSON.parse(localStorage.getItem(data.storageKey) ?? "[]");
+      if (Array.isArray(parsed)) list = parsed.filter((theme) => theme && theme.id && theme.dataUrl && theme.colors);
+    } catch {}
+    try {
+      const legacy = JSON.parse(localStorage.getItem(data.legacyKey) ?? "null");
+      if (legacy && legacy.dataUrl && legacy.colors) {
+        legacy.id = data.customPrefix + "legacy";
+        list = [legacy, ...list];
+        localStorage.setItem(data.storageKey, JSON.stringify(list));
+        localStorage.removeItem(data.legacyKey);
+      }
+    } catch {}
+    return list;
+  };
+  const saveCustoms = (list) => {
+    try { localStorage.setItem(data.storageKey, JSON.stringify(list)); }
+    catch (error) { console.warn("WorkBuddy Skin：自定义主题占用超出 localStorage 配额，本次生效但重启后不保留", error); }
   };
 
   const importFromDataUrl = (dataUrl, name) => new Promise((resolve, reject) => {
+    const existing = loadCustoms();
+    if (existing.length >= data.maxCustomSlots) {
+      reject(new Error("\\u81ea\\u5b9a\\u4e49\\u69fd\\u4f4d\\u5df2\\u6ee1\\uff08\\u6700\\u591a " + data.maxCustomSlots + " \\u4e2a\\uff09\\uff0c\\u8bf7\\u5148\\u5220\\u9664\\u4e00\\u4e2a\\u518d\\u4e0a\\u4f20"));
+      return;
+    }
+    const animated = sniffAnimated(dataUrl);
+    // base64 长度 * 3/4 ≈ 原始字节数；动图不压缩直接持久化，必须卡上限
+    if (animated && Math.floor((dataUrl.length - dataUrl.indexOf(",") - 1) * 3 / 4) > MAX_ANIMATED_BYTES) {
+      reject(new Error("动图超过 3MB 上限（需存入 localStorage 以便重启后保留），请压缩后再试"));
+      return;
+    }
     const img = new Image();
     img.onload = () => {
-      const scale = Math.min(1, 1600 / img.width);
-      const full = document.createElement("canvas");
-      full.width = Math.round(img.width * scale);
-      full.height = Math.round(img.height * scale);
-      full.getContext("2d").drawImage(img, 0, 0, full.width, full.height);
+      if (animated && Math.max(img.width, img.height) > MAX_ANIMATED_DIMENSION) {
+        reject(new Error("动图分辨率过高（" + img.width + "×" + img.height + "，最长边限 " + MAX_ANIMATED_DIMENSION + "px），请缩小尺寸后再试"));
+        return;
+      }
+      // canvas drawImage 对动图只取第一帧，正好用于取色
       const sample = document.createElement("canvas");
       sample.width = 48; sample.height = Math.max(1, Math.round(48 * img.height / img.width));
       sample.getContext("2d").drawImage(img, 0, 0, sample.width, sample.height);
+      let heroUrl = dataUrl;
+      if (!animated) {
+        const scale = Math.min(1, 1600 / img.width);
+        const full = document.createElement("canvas");
+        full.width = Math.round(img.width * scale);
+        full.height = Math.round(img.height * scale);
+        full.getContext("2d").drawImage(img, 0, 0, full.width, full.height);
+        heroUrl = full.toDataURL("image/webp", 0.8);
+      }
       const theme = {
+        id: data.customPrefix + Date.now().toString(36),
         name: name || "\\u6211\\u7684\\u56fe\\u7247",
-        dataUrl: full.toDataURL("image/webp", 0.8),
+        dataUrl: heroUrl,
         colors: extractPalette(sample),
       };
-      saveCustom(theme);
+      saveCustoms([...existing, theme]);
       applyCustomTheme(theme);
       resolve(theme.colors);
     };
@@ -242,13 +321,14 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
 
   const picker = document.createElement("input");
   picker.type = "file";
-  picker.accept = "image/png,image/jpeg,image/webp";
+  picker.accept = "image/png,image/jpeg,image/webp,image/gif,image/avif";
   picker.style.display = "none";
   picker.addEventListener("change", () => {
     const file = picker.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => importFromDataUrl(reader.result, file.name.replace(/\\.[a-z0-9]+$/i, ""));
+    reader.onload = () => importFromDataUrl(reader.result, file.name.replace(/\\.[a-z0-9]+$/i, ""))
+      .catch((error) => alert("WorkBuddy Skin\\uff1a" + (error?.message ?? error)));
     reader.readAsDataURL(file);
     picker.value = "";
     panel.style.display = "none";
@@ -260,8 +340,7 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   const native = row("\\u539f\\u751f\\u754c\\u9762", "rgba(0,0,0,.24)", () => { clearTheme(); panel.style.display = "none"; });
   rows.set(null, native);
 
-  const saved = loadCustom();
-  if (saved) ensureCustomRow(saved);
+  for (const saved of loadCustoms()) ensureCustomRow(saved);
 
   button.addEventListener("click", () => {
     panel.style.display = panel.style.display === "none" ? "block" : "none";
@@ -273,7 +352,7 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   else setTheme(data.activeId);
 
   // 供脚本化调用与测试：window.__workbuddySkin.importFromDataUrl(dataUrl, name)
-  window.__workbuddySkin = { importFromDataUrl, setTheme, clearTheme, deleteCustom };
+  window.__workbuddySkin = { importFromDataUrl, setTheme, clearTheme, deleteCustom, listCustoms: loadCustoms };
   return true;
 })()`;
 }

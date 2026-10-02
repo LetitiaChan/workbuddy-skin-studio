@@ -13,7 +13,7 @@ import { THEME_SCHEMA_VERSION } from "./constants.mjs";
 
 const COLOR_KEYS = ["accent", "secondary", "surface", "text"];
 const COPY_KEYS = ["brand", "headline", "tagline"];
-const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".avifs"]);
 const HEX_COLOR = /^#[0-9A-F]{6}$/i;
 const THEME_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const DEFAULT_COLORS = {
@@ -48,7 +48,7 @@ function normalizeHero(hero) {
     throw new Error("theme hero must be a relative path inside the theme directory");
   }
   if (!IMAGE_EXTENSIONS.has(extname(hero).toLowerCase())) {
-    throw new Error("theme hero must be PNG, JPEG, or WebP");
+    throw new Error("theme hero must be PNG, JPEG, WebP, GIF, or AVIF");
   }
   return hero;
 }

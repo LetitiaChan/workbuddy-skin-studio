@@ -21,8 +21,8 @@ function copy(value, fallback = "") {
 }
 
 export function buildSkinCss({ theme, heroDataUrl }) {
-  if (!/^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/=]+$/i.test(heroDataUrl)) {
-    throw new Error("hero 必须是本地 PNG、JPEG 或 WebP 数据");
+  if (!/^data:image\/(?:png|jpeg|webp|gif|avif);base64,[a-z0-9+/=]+$/i.test(heroDataUrl)) {
+    throw new Error("hero 必须是本地 PNG、JPEG、WebP、GIF 或 AVIF 数据");
   }
   const colors = {
     accent: color(theme.colors?.accent, DEFAULT_COLORS.accent),

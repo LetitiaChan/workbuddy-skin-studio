@@ -22,8 +22,9 @@
 一个给 WorkBuddy 桌面端换肤的工具。通过本机回环 CDP 把主题实时注入 WorkBuddy 界面，不修改 `app.asar`，不破坏应用签名，也不需要为每次 WorkBuddy 更新重新适配。
 
 - **一键切换**：应用皮肤后 WorkBuddy 右上角出现 🎨 菜单，所有已装主题和原生界面即点即换，零等待
-- **自定义上传**：菜单里选「＋ 自定义图片」直接上传本地图片，自动按图片风格取色（主色、辅色、面板底色、文字色），即点即换；行尾 × 一键删除
+- **自定义上传**：菜单里选「＋ 自定义图片」直接上传本地图片，自动按图片风格取色（主色、辅色、面板底色、文字色），即点即换；最多 6 个自定义槽位各自保留，行尾 × 单独删除
 - **一张图片就是一个主题**：任意 PNG、JPG、JPEG、WebP 直接生成皮肤（配色 + 背景底图）
+- **动图背景**：GIF、动态 WebP、动态 AVIF 原样注入、保留动画播放（跳过 canvas 重编码，仍用第一帧取色）；动图限 3MB、最长边 1920px（体积为适配 localStorage 配额，分辨率为避免拖慢渲染）
 - **10 个内置预设**：Miku、原神 ×2、鸣潮 ×2、火影忍者 ×2、恋与深空 ×2
 - **深浅色自动适配**：根据主题配色的 surface 明度自动切换 WorkBuddy 的 `data-vscode-theme-kind`，让 VS Code 原生控件（输入框、按钮等）跟着深浅色变
 - **双平台**：macOS（`.command`）+ Windows（`.ps1`）
@@ -88,8 +89,8 @@ node src/cli.mjs apply --theme genshin-night
 应用皮肤后，WorkBuddy 右上角（titlebar 下方）会出现 🎨 按钮：
 
 - 点击展开主题列表，点击任意主题即时切换
-- 「＋ 自定义图片」上传本地图片生成主题（canvas 自动取色 + 压缩成 webp）
-- 自定义主题行尾 × 一键删除
+- 「＋ 自定义图片」上传本地图片生成主题（canvas 自动取色 + 压缩成 webp；GIF/动态 WebP/动态 AVIF 保留动画不压缩，限 3MB、最长边 1920px）
+- 自定义主题最多 6 个槽位，每个独立持久化（localStorage），行尾 × 单独删除
 - 「原生界面」恢复官方外观
 
 ## 自定义主题
@@ -123,7 +124,7 @@ node src/cli.mjs apply --theme my-skin
 只有 `schemaVersion`、`id`、`name` 和 `hero` 必填。图片必须位于主题目录内，颜色和文案（`copy`）都可省略。
 
 - `surface` 的明度决定 light/dark 模式（亮度 > 140 为 light），自动切换 WorkBuddy 的 `data-vscode-theme-kind`
-- `hero` 支持 PNG / JPG / JPEG / WebP
+- `hero` 支持 PNG / JPG / JPEG / WebP / GIF / AVIF（GIF、动态 WebP、动态 AVIF 保留动画播放；AVIF 需 Chromium 85+）
 
 ## 命令行
 

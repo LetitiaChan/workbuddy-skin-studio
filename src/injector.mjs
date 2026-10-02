@@ -7,7 +7,15 @@ import { buildSkinMenuScript, CSS_SENTINELS } from "./skin-menu.mjs";
 
 const STYLE_ID = "workbuddy-skin-style";
 const MENU_ID = "workbuddy-skin-menu";
-const MIME = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp" };
+const MIME = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".avif": "image/avif",
+  ".avifs": "image/avif",
+};
 
 async function evaluateTargets(targets, expression, Session) {
   const values = [];

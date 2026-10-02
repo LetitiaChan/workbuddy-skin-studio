@@ -103,7 +103,12 @@ No official files are touched.
   closest id, or just apply the default and let them pick from the 🎨 menu.
 - Custom image: `node src/cli.mjs create --image "/path/to/hero.webp" --name "My Skin"`
   then `node src/cli.mjs apply --theme my-skin`. The in-app 🎨 menu also supports
-  "＋ 自定义图片" with automatic color extraction.
+  "＋ 自定义图片" with automatic color extraction. Up to 6 custom-upload slots are
+  kept simultaneously (each persisted and deletable). Animated images (GIF /
+  animated WebP / animated AVIF) are supported: they bypass canvas re-encoding to
+  keep the animation, capped at 3 MB (localStorage quota) and 1920 px longest
+  side (rendering performance) in both the menu and CLI paths. AVIF requires the
+  embedded Chromium to be ≥ 85 (any recent Electron qualifies).
 
 ## Pause / restore to native
 
