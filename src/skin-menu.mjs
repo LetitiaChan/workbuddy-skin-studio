@@ -110,12 +110,14 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   const setTheme = (id) => {
     const theme = data.themes.find((candidate) => candidate.id === id);
     if (!theme) return;
+    releaseHeroBlob();
     style.textContent = theme.css;
     document.documentElement.dataset.workbuddySkin = theme.id;
     applyMode(theme.surface);
     paint(theme.id);
   };
   const clearTheme = () => {
+    releaseHeroBlob();
     style.textContent = "";
     delete document.documentElement.dataset.workbuddySkin;
     applyMode("#ffffff");
@@ -180,9 +182,15 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   // blob URL 生命周期与 renderer 一致，正好匹配注入的生命周期；localStorage 里仍存
   // data URL，每次应用现场转换，重启后重新注入时自然重建
   let heroBlobUrl = null;
+  const releaseHeroBlob = () => {
+    if (!heroBlobUrl) return;
+    URL.revokeObjectURL(heroBlobUrl);
+    heroBlobUrl = null;
+  };
   const asCssUrl = (dataUrl) => {
+    // 无论走哪条分支都先释放上一张 hero 的 blob：小图返回 data URL 后旧 blob 已无人引用
+    releaseHeroBlob();
     if (dataUrl.length < 256 * 1024) return dataUrl;
-    if (heroBlobUrl) URL.revokeObjectURL(heroBlobUrl);
     const comma = dataUrl.indexOf(",");
     const mime = dataUrl.slice(5, comma).split(";")[0];
     const bin = atob(dataUrl.slice(comma + 1));
