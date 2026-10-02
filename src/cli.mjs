@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { DEFAULT_CDP_PORT, DEFAULT_THEME_ID, EXPECTED_BUNDLE_ID, RENDERER_URL_HINT, resolveStudioPaths } from "./constants.mjs";
-import { applySkin, removeSkin, skinStatus } from "./injector.mjs";
+import { applySkin, removeSkin, skinStatus, readSavedActiveSkin, activateSavedSkin } from "./injector.mjs";
 import { loadTheme } from "./theme-schema.mjs";
 import { createSingleImageTheme, listThemes } from "./theme-store.mjs";
 
@@ -40,6 +40,8 @@ function defaults(overrides) {
     applySkin,
     removeSkin,
     skinStatus,
+    readSavedActiveSkin,
+    activateSavedSkin,
     ...overrides,
   };
 }
@@ -62,10 +64,32 @@ export async function runCli(argv, overrides = {}) {
     return deps.createSingleImageTheme({ imagePath: args.image, name: args.name, storeRoot: deps.userThemesRoot });
   }
   if (command === "apply") {
-    const themeId = args.theme ?? DEFAULT_THEME_ID;
+    const port = portFrom(args.port);
+    let themeId = args.theme;
+    let savedCustomId = null;
+    let activeId;
+    if (!themeId) {
+      // 未指定主题：恢复上次使用的皮肤（菜单切换时已持久化到渲染进程 localStorage）；
+      // 是自定义皮肤则先按默认主题注入菜单（activeId=null），再激活自定义皮肤；
+      // 没有记录或读取失败则回退默认主题
+      const saved = await deps.readSavedActiveSkin({ port }).catch(() => null);
+      if (saved && saved.startsWith("custom-")) {
+        themeId = DEFAULT_THEME_ID;
+        activeId = null;
+        savedCustomId = saved;
+      } else {
+        themeId = saved ?? DEFAULT_THEME_ID;
+      }
+    }
     const themes = await deps.listThemes({ roots });
-    const selected = themes.find((theme) => theme.id === themeId);
-    if (!selected) throw new Error(`找不到主题：${themeId}`);
+    let selected = themes.find((theme) => theme.id === themeId);
+    if (!selected) {
+      if (args.theme) throw new Error(`找不到主题：${themeId}`);
+      // 记住的主题已不存在：回退默认
+      themeId = DEFAULT_THEME_ID;
+      selected = themes.find((theme) => theme.id === themeId);
+      if (!selected) throw new Error(`找不到主题：${themeId}`);
+    }
     const loadedTheme = await deps.loadTheme(selected.path);
     const menuThemes = [];
     for (const theme of themes) {
@@ -79,7 +103,13 @@ export async function runCli(argv, overrides = {}) {
         // 坏主题不阻塞换肤，只是不进菜单
       }
     }
-    return deps.applySkin({ loadedTheme, themes: menuThemes, port: portFrom(args.port) });
+    const result = await deps.applySkin({ loadedTheme, themes: menuThemes, port, activeId });
+    if (savedCustomId) {
+      await deps.activateSavedSkin({ port, id: savedCustomId, fallbackId: themeId });
+      result.themeId = savedCustomId;
+      result.restored = true;
+    }
+    return result;
   }
   if (command === "pause" || command === "restore") {
     return deps.removeSkin({ port: portFrom(args.port) });

@@ -38,11 +38,16 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     customPrefix: "custom-",
     storageKey: "workbuddyCustomThemes",
     legacyKey: "workbuddyCustomTheme",
-    maxCustomSlots: 6,
+    activeKey: "workbuddySkinActive",
+    maxCustomSlots: 10,
   });
 
   return `(() => {
   const data = ${payload};
+
+  // 兼容旧版本注入：旧脚本带常驻 MutationObserver 跟随 topbar 迁移，先杀掉防止旧菜单复活
+  window.__workbuddySkinObserver?.disconnect();
+  window.__workbuddySkinLayoutObserver?.disconnect();
 
   let style = document.getElementById(data.styleId);
   if (!style) {
@@ -57,7 +62,39 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   // no-drag：新建任务页等路由的 workbuddy-topbar 声明了 -webkit-app-region:drag
   // （矩形 240,30-1838,86 覆盖按钮位置），真实鼠标点击会被吞成窗口拖动；
   // DOM 命中测试与程序化 click 均绕过该机制，只有真实输入可复现
-  root.style.cssText = "position:fixed;top:48px;right:16px;z-index:2147483000;font:500 13px/1.4 system-ui;user-select:none;-webkit-app-region:no-drag;app-region:no-drag;";
+  // top:74px = topbar（30~86，所有路由都存在）内的原生按钮行（42~74）下沿起，
+  // 与原生按钮恰好相切不重叠；上半段落在 drag 区靠继承的 no-drag 保证可点击
+  root.style.cssText = "position:fixed;top:74px;right:7px;z-index:2147483000;font:500 13px/1.4 system-ui;user-select:none;-webkit-app-region:no-drag;app-region:no-drag;";
+
+  // 水平位置锚定原生按钮行（.workbuddy-topbar-actions）右缘：右侧详情栏打开时
+  // 主 topbar 右缘左移，固定 right:7px 会把按钮甩进面板区域；跟随 actions 则始终
+  // 停在「第一行按钮下方」。右缘偏移 = 行右缘 + 5px（与既有视觉一致，常态即 right:7px）。
+  // actions 不存在时回落视口右缘 7px。仅调 right，root 始终挂 body，无挂载生命周期问题
+  let cachedRight = null;
+  const reposition = () => {
+    let next = 7;
+    const actions = document.querySelector(".workbuddy-topbar-actions");
+    if (actions) {
+      const r = actions.getBoundingClientRect();
+      if (r.width > 0) next = Math.max(0, Math.round(window.innerWidth - r.right - 5));
+    }
+    if (next !== cachedRight) {
+      cachedRight = next;
+      root.style.right = next + "px";
+    }
+  };
+  let relocateQueued = false;
+  const layoutObserver = new MutationObserver(() => {
+    if (relocateQueued) return;
+    relocateQueued = true;
+    queueMicrotask(() => { relocateQueued = false; reposition(); });
+  });
+  layoutObserver.observe(document.body, { childList: true, subtree: true });
+  window.__workbuddySkinLayoutObserver = layoutObserver;
+  window.addEventListener("resize", reposition);
+  reposition();
+  // actions 行可能晚于本脚本挂载，下一帧再校准一次
+  requestAnimationFrame(reposition);
 
   const button = document.createElement("button");
   button.type = "button";
@@ -67,7 +104,8 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   button.style.cssText = "display:block;margin-left:auto;width:38px;height:38px;border:0;background:transparent;cursor:pointer;font-size:19px;padding:0;line-height:38px;";
 
   const panel = document.createElement("div");
-  panel.style.cssText = "display:none;margin-top:8px;min-width:200px;padding:6px;border-radius:12px;border:1px solid rgba(0,0,0,.1);background:rgba(255,255,255,.94);backdrop-filter:blur(16px);box-shadow:0 10px 30px rgba(0,0,0,.18);color:#17344f;-webkit-app-region:no-drag;app-region:no-drag;";
+  // absolute 相对 root 定位：挂进工具栏时面板从按钮正下方展开，且不再撑大 root
+  panel.style.cssText = "display:none;position:absolute;top:calc(100% + 8px);right:0;min-width:200px;padding:6px;border-radius:12px;border:1px solid rgba(0,0,0,.1);background:rgba(255,255,255,.94);backdrop-filter:blur(16px);box-shadow:0 10px 30px rgba(0,0,0,.18);color:#17344f;-webkit-app-region:no-drag;app-region:no-drag;";
 
   const rows = new Map();
   const paint = (id) => {
@@ -97,34 +135,86 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     const v = parseInt(m[1], 16);
     return (0.299 * ((v >> 16) & 255) + 0.587 * ((v >> 8) & 255) + 0.114 * (v & 255)) > 140;
   };
-  // 同步切换 WorkBuddy 的 VS Code 主题模式，让原生控件（输入框/按钮等）跟着深浅色变
-  const applyMode = (surface) => {
-    const dark = !isLightSurface(surface);
+  // 同步切换 WorkBuddy 的主题模式，让原生控件跟着深浅色变。
+  // 两个坑：
+  // 1. dark token 作用域含 body[data-vscode-theme-name="IDE Night"]，主题名必须写
+  //    应用真实值（dark=IDE Night / light=IDE Light，旧版误用 IDE Dark 匹配不上）；
+  // 2. 应用启动/主题同步会异步回写 themeName 和 body/html 的深浅类——注入若早于
+  //    应用初始化完成，我们写的 light 类会被覆盖，cb 类名驱动的区域（如 composer）
+  //    滞留深色。故钉住整个模式（themeName + themeKind + 六个类），观察 body/html
+  //    属性，不一致才重写（写后状态一致，observer 回调空转，收敛无环）
+  const MODE_CLASSES = ["light", "vscode-light", "cb-light", "dark", "vscode-dark", "cb-dark"];
+  const isDarkClass = (cls) => cls === "dark" || cls === "vscode-dark" || cls === "cb-dark";
+  let pinnedDark = null;
+  const writeMode = () => {
+    const dark = pinnedDark;
     const body = document.body;
     const html = document.documentElement;
     body.dataset.vscodeThemeKind = dark ? "vscode-dark" : "vscode-light";
-    body.dataset.vscodeThemeName = dark ? "IDE Dark" : "IDE Light";
+    body.dataset.vscodeThemeName = dark ? "IDE Night" : "IDE Light";
     html.style.colorScheme = dark ? "dark" : "light";
-    ["light", "vscode-light", "cb-light", "dark", "vscode-dark", "cb-dark"].forEach((cls) => {
-      const isDarkCls = cls === "dark" || cls === "vscode-dark" || cls === "cb-dark";
-      body.classList.toggle(cls, dark ? isDarkCls : !isDarkCls);
-      html.classList.toggle(cls, dark ? isDarkCls : !isDarkCls);
+    MODE_CLASSES.forEach((cls) => {
+      const want = dark ? isDarkClass(cls) : !isDarkClass(cls);
+      body.classList.toggle(cls, want);
+      html.classList.toggle(cls, want);
     });
+  };
+  const modeMatches = () => {
+    if (pinnedDark === null) return true;
+    const dark = pinnedDark;
+    const body = document.body;
+    const html = document.documentElement;
+    if (body.dataset.vscodeThemeName !== (dark ? "IDE Night" : "IDE Light")) return false;
+    if (body.dataset.vscodeThemeKind !== (dark ? "vscode-dark" : "vscode-light")) return false;
+    return MODE_CLASSES.every((cls) => {
+      const want = dark ? isDarkClass(cls) : !isDarkClass(cls);
+      return body.classList.contains(cls) === want && html.classList.contains(cls) === want;
+    });
+  };
+  const modeObserver = new MutationObserver(() => {
+    if (pinnedDark !== null && !modeMatches()) writeMode();
+  });
+  const applyMode = (surface, { pin = true } = {}) => {
+    modeObserver.disconnect();
+    if (!pin) {
+      // 恢复原生：解除钉住，类与属性的所有权还给应用
+      pinnedDark = null;
+      return;
+    }
+    pinnedDark = !isLightSurface(surface);
+    writeMode();
+    // 应用的回写是异步的，补写两轮覆盖（observer 持续兜底）
+    setTimeout(() => { if (pinnedDark !== null && !modeMatches()) writeMode(); }, 60);
+    setTimeout(() => { if (pinnedDark !== null && !modeMatches()) writeMode(); }, 350);
+    modeObserver.observe(document.body, { attributes: true, attributeFilter: ["class", "data-vscode-theme-kind", "data-vscode-theme-name"] });
+    modeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  };
+  const persistActive = (id) => {
+    // 记住当前皮肤：重启后 apply 不带 --theme 时恢复（见 cli.mjs）
+    try {
+      if (id) localStorage.setItem(data.activeKey, id);
+      else localStorage.removeItem(data.activeKey);
+    } catch {}
   };
   const setTheme = (id) => {
     const theme = data.themes.find((candidate) => candidate.id === id);
     if (!theme) return;
     releaseHeroBlob();
+    releaseVideo();
     style.textContent = theme.css;
     document.documentElement.dataset.workbuddySkin = theme.id;
     applyMode(theme.surface);
+    persistActive(theme.id);
     paint(theme.id);
   };
   const clearTheme = () => {
     releaseHeroBlob();
+    releaseVideo();
     style.textContent = "";
     delete document.documentElement.dataset.workbuddySkin;
-    applyMode("#ffffff");
+    // 恢复原生：pin:false 解除模式钉住，把类与属性的所有权还给应用
+    applyMode("#ffffff", { pin: false });
+    persistActive(null);
     paint(null);
   };
 
@@ -132,7 +222,7 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     rows.set(theme.id, row(theme.name, theme.accent, () => { setTheme(theme.id); panel.style.display = "none"; }));
   }
 
-  // ---- 自定义图片：本地选图 -> 压缩 -> 取色 -> 生成 CSS -> 持久化（多槽位） ----
+  // ---- 自定义皮肤：本地选图/选视频 -> 压缩 -> 取色 -> 生成 CSS -> 持久化（多槽位） ----
   const buildCustomCss = (dataUrl, colors, themeId) => data.cssTemplate
     .split(data.sentinels.hero).join(dataUrl)
     .split(data.sentinels.accent).join(colors.accent)
@@ -143,17 +233,33 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
 
   const hex = (r, g, b) => "#" + [r, g, b].map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("");
   const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+  const hexToRgb = (value) => {
+    const m = /^#([0-9a-f]{6})$/i.exec(value || "");
+    if (!m) return null;
+    const v = parseInt(m[1], 16);
+    return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+  };
+  const lumOf = (rgb) => 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+  // 由主色派生浅/深两套面板底色+文字色，运行时按模式挑选（见 effectiveColors）
+  const buildSurfaces = (accentRgb) => ({
+    light: {
+      surface: hex(...mix(accentRgb, [252, 252, 255], 0.92)),
+      text: hex(...mix(accentRgb, [16, 24, 40], 0.82)),
+    },
+    dark: {
+      surface: hex(...mix(accentRgb, [12, 12, 18], 0.86)),
+      text: hex(...mix(accentRgb, [244, 246, 252], 0.85)),
+    },
+  });
 
   const extractPalette = (canvas) => {
     const ctx = canvas.getContext("2d");
     const { data: px } = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const buckets = new Map();
-    let lumSum = 0, count = 0;
     for (let i = 0; i < px.length; i += 4) {
       const r = px[i], g = px[i + 1], b = px[i + 2];
       const max = Math.max(r, g, b), min = Math.min(r, g, b);
       const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-      lumSum += lum; count += 1;
       const sat = max === 0 ? 0 : (max - min) / max;
       if (sat < 0.18 || lum < 24 || lum > 245) continue;   // 灰、过暗、过曝不参与取主色
       const d = max - min || 1;
@@ -164,20 +270,17 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
       entry.w += weight; entry.r += r * weight; entry.g += g * weight; entry.b += b * weight;
       buckets.set(bucket, entry);
     }
-    const avgLum = count ? lumSum / count : 128;
     const ranked = [...buckets.values()].sort((a, b2) => b2.w - a.w)
       .map((e) => ({ rgb: [e.r / e.w, e.g / e.w, e.b / e.w], h: e.h, w: e.w }));
     const accent = ranked[0]?.rgb ?? [36, 201, 215];
     const second = ranked.find((e) => Math.abs(e.h - (ranked[0]?.h ?? 0)) > 50)?.rgb
       ?? mix(accent, [255, 255, 255], 0.35);
-    const light = avgLum > 128;
-    const surface = light ? mix(accent, [252, 252, 255], 0.92) : mix(accent, [12, 12, 18], 0.86);
-    const text = light ? mix(accent, [16, 24, 40], 0.82) : mix(accent, [244, 246, 252], 0.85);
+    // 明暗不再由全图平均亮度决定：同一主题生成浅/深两套 surface/text，
+    // 运行时按「自动（主色亮度）/浅色/深色」三选挑选
     return {
       accent: hex(...accent),
       secondary: hex(...second),
-      surface: hex(...surface),
-      text: hex(...text),
+      ...buildSurfaces(accent),
     };
   };
 
@@ -204,11 +307,130 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     return heroBlobUrl;
   };
 
+  // ---- 视频皮肤（MP4）：CSS 无法播放视频背景，做法是海报帧作 CSS 底图兜底，
+  // 另挂 <video> 固定层透出动画；视频体积普遍超 localStorage 配额，
+  // 原始文件存 IndexedDB（元数据仍走 localStorage），blob URL 会话内缓存复用 ----
+  const VIDEO_LAYER_CSS = "\\n#root { isolation: isolate !important; }\\n";
+  const MAX_VIDEO_BYTES = 30 * 1024 * 1024;
+  let videoLayer = null;
+  const videoUrlCache = new Map();
+  const releaseVideo = () => {
+    videoLayer?.remove();
+    videoLayer = null;
+  };
+  const videoStore = {
+    db: null,
+    open() {
+      if (this.db) return Promise.resolve(this.db);
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open("workbuddy-skin-studio", 1);
+        req.onupgradeneeded = () => { req.result.createObjectStore("videos"); };
+        req.onsuccess = () => { this.db = req.result; resolve(this.db); };
+        req.onerror = () => reject(req.error);
+      });
+    },
+    txn(mode, run) {
+      return this.open().then((db) => new Promise((resolve, reject) => {
+        const tx = db.transaction("videos", mode);
+        const req = run(tx.objectStore("videos"));
+        tx.oncomplete = () => resolve(req?.result);
+        tx.onerror = () => reject(tx.error);
+      }));
+    },
+    put(id, blob) { return this.txn("readwrite", (store) => store.put(blob, id)); },
+    get(id) { return this.txn("readonly", (store) => store.get(id)); },
+    del(id) { return this.txn("readwrite", (store) => store.delete(id)); },
+  };
+  // 渐变遮罩与 CSS 模板里 #root 背景的两层渐变一致，保证视频上内容可读
+  const mountVideo = (theme) => {
+    releaseVideo();
+    const attach = (url) => {
+      // 异步取 blob 期间用户可能已切换主题，避免把视频挂到错误主题上
+      if (document.documentElement.dataset.workbuddySkin !== theme.id) return;
+      releaseVideo();
+      const wrapper = document.createElement("div");
+      wrapper.style.cssText = "position:fixed;inset:0;z-index:-1;pointer-events:none;overflow:hidden;";
+      const video = document.createElement("video");
+      video.autoplay = true; video.muted = true; video.loop = true; video.playsInline = true;
+      video.style.cssText = "width:100%;height:100%;object-fit:cover;object-position:right center;display:block;";
+      video.src = url;
+      video.play().catch(() => {});
+      const overlay = document.createElement("div");
+      overlay.style.cssText = "position:absolute;inset:0;background:"
+        + "linear-gradient(90deg, color-mix(in srgb, var(--wb-surface) 72%, transparent) 0 14%, transparent 30%),"
+        + "linear-gradient(180deg, transparent 0 70%, color-mix(in srgb, var(--wb-surface) 50%, transparent) 85% 100%);";
+      wrapper.append(video, overlay);
+      (document.getElementById("root") ?? document.body).appendChild(wrapper);
+      videoLayer = wrapper;
+    };
+    const cached = videoUrlCache.get(theme.id);
+    if (cached) { attach(cached); return; }
+    videoStore.get(theme.id).then((blob) => {
+      if (!blob) { console.warn("WorkBuddy Skin：视频数据缺失（IndexedDB 中未找到），请重新上传"); return; }
+      const url = URL.createObjectURL(blob);
+      videoUrlCache.set(theme.id, url);
+      attach(url);
+    }).catch((error) => console.warn("WorkBuddy Skin：视频皮肤加载失败", error));
+  };
+
+  // 旧格式 colors（扁平 surface/text）按 accent 重算浅/深两套，无损升级；新格式原样返回
+  const normalizeColors = (colors) => {
+    if (!colors || typeof colors !== "object") return null;
+    if (colors.light?.surface && colors.light?.text && colors.dark?.surface && colors.dark?.text) return colors;
+    const accentRgb = hexToRgb(colors.accent);
+    if (!accentRgb) return null;
+    return {
+      accent: colors.accent,
+      secondary: colors.secondary ?? colors.accent,
+      ...buildSurfaces(accentRgb),
+    };
+  };
+  // 兼容旧自定义主题：补双套配色，补 mode 字段（默认 auto）；
+  // 视频皮肤无 dataUrl，以 poster（海报帧）为必备字段
+  const normalizeTheme = (theme) => {
+    if (!theme || !theme.id || !theme.colors) return null;
+    if (theme.kind === "video" ? !theme.poster : !theme.dataUrl) return null;
+    const colors = normalizeColors(theme.colors);
+    if (!colors) return null;
+    const mode = theme.mode === "light" || theme.mode === "dark" ? theme.mode : "auto";
+    return { ...theme, colors, mode };
+  };
+  // 运行时把双套配色压平成 buildCustomCss 需要的扁平结构；
+  // auto 用主色 accent 亮度判定明暗（亮主色→浅，深主色→深），阈值 128 与原全图判定一致
+  const effectiveColors = (theme) => {
+    const colors = theme.colors;
+    const accentRgb = hexToRgb(colors.accent);
+    const autoKey = accentRgb && lumOf(accentRgb) > 128 ? "light" : "dark";
+    const mode = theme.mode === "light" || theme.mode === "dark" ? theme.mode : "auto";
+    const variant = colors[mode === "auto" ? autoKey : mode] ?? colors.light;
+    return {
+      accent: colors.accent,
+      secondary: colors.secondary,
+      surface: variant.surface,
+      text: variant.text,
+    };
+  };
+
   const applyCustomTheme = (theme) => {
-    style.textContent = buildCustomCss(asCssUrl(theme.dataUrl), theme.colors, theme.id);
+    const flat = effectiveColors(theme);
+    if (theme.kind === "video") {
+      releaseHeroBlob();
+      // 海报帧作 CSS 底图：视频异步挂载前的兜底，视频解码失败时也不至于裸奔
+      style.textContent = buildCustomCss(theme.poster, flat, theme.id) + VIDEO_LAYER_CSS;
+      document.documentElement.dataset.workbuddySkin = theme.id;
+      applyMode(flat.surface);
+      ensureCustomRow(theme);
+      persistActive(theme.id);
+      paint(theme.id);
+      mountVideo(theme);
+      return;
+    }
+    releaseVideo();
+    style.textContent = buildCustomCss(asCssUrl(theme.dataUrl), flat, theme.id);
     document.documentElement.dataset.workbuddySkin = theme.id;
-    applyMode(theme.colors.surface);
+    applyMode(flat.surface);
     ensureCustomRow(theme);
+    persistActive(theme.id);
     paint(theme.id);
   };
 
@@ -216,6 +438,9 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     const list = loadCustoms().filter((theme) => theme.id !== id);
     saveCustoms(list);
     if (document.documentElement.dataset.workbuddySkin === id) clearTheme();
+    const cachedUrl = videoUrlCache.get(id);
+    if (cachedUrl) { URL.revokeObjectURL(cachedUrl); videoUrlCache.delete(id); }
+    videoStore.del(id).catch(() => {});
     rows.get(id)?.remove();
     rows.delete(id);
   };
@@ -227,6 +452,28 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     }, uploadRow);
     const text = customRow.querySelector("span + span");
     text.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    // 明暗模式三选：自（自动按主色亮度）→ 浅 → 深 循环，持久化；正应用此主题时立即重渲染
+    const MODE_SEQUENCE = ["auto", "light", "dark"];
+    const MODE_LABEL = { auto: "\\u81ea", light: "\\u6d45", dark: "\\u6df1" };
+    const MODE_TITLE = { auto: "\\u81ea\\u52a8\\uff08\\u6309\\u4e3b\\u8272\\u660e\\u6697\\uff09", light: "\\u6d45\\u8272", dark: "\\u6df1\\u8272" };
+    const currentMode = () => (theme.mode === "light" || theme.mode === "dark" ? theme.mode : "auto");
+    const modeBtn = document.createElement("span");
+    modeBtn.style.cssText = "flex:none;min-width:18px;height:18px;line-height:17px;text-align:center;border-radius:5px;color:rgba(0,0,0,.55);font-size:11px;border:1px solid rgba(0,0,0,.2);cursor:pointer;padding:0 2px;box-sizing:border-box;";
+    const refreshModeBtn = () => {
+      modeBtn.textContent = MODE_LABEL[currentMode()];
+      modeBtn.title = "\\u660e\\u6697\\u6a21\\u5f0f\\uff1a" + MODE_TITLE[currentMode()] + "\\uff08\\u70b9\\u51fb\\u5207\\u6362\\uff09";
+    };
+    refreshModeBtn();
+    modeBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      theme.mode = MODE_SEQUENCE[(MODE_SEQUENCE.indexOf(currentMode()) + 1) % MODE_SEQUENCE.length];
+      saveCustoms(loadCustoms().map((t) => (t.id === theme.id ? { ...t, mode: theme.mode } : t)));
+      refreshModeBtn();
+      if (document.documentElement.dataset.workbuddySkin === theme.id) {
+        applyCustomTheme(loadCustoms().find((saved) => saved.id === theme.id) ?? theme);
+      }
+    });
+    customRow.appendChild(modeBtn);
     const del = document.createElement("span");
     del.textContent = "\\u00d7";
     del.title = "\\u5220\\u9664\\u81ea\\u5b9a\\u4e49\\u4e3b\\u9898";
@@ -268,13 +515,14 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     let list = [];
     try {
       const parsed = JSON.parse(localStorage.getItem(data.storageKey) ?? "[]");
-      if (Array.isArray(parsed)) list = parsed.filter((theme) => theme && theme.id && theme.dataUrl && theme.colors);
+      if (Array.isArray(parsed)) list = parsed.map(normalizeTheme).filter(Boolean);
     } catch {}
     try {
       const legacy = JSON.parse(localStorage.getItem(data.legacyKey) ?? "null");
       if (legacy && legacy.dataUrl && legacy.colors) {
         legacy.id = data.customPrefix + "legacy";
-        list = [legacy, ...list];
+        const normalized = normalizeTheme(legacy);
+        if (normalized) list = [normalized, ...list];
         localStorage.setItem(data.storageKey, JSON.stringify(list));
         localStorage.removeItem(data.legacyKey);
       }
@@ -322,6 +570,7 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
         name: name || "\\u6211\\u7684\\u56fe\\u7247",
         dataUrl: heroUrl,
         colors: extractPalette(sample),
+        mode: "auto",
       };
       saveCustoms([...existing, theme]);
       applyCustomTheme(theme);
@@ -331,22 +580,83 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     img.src = dataUrl;
   });
 
+  // 视频导入：<video> 解码抽帧取色 + 生成海报帧，原始文件存 IndexedDB
+  const importFromVideoFile = (file, name) => new Promise((resolve, reject) => {
+    const existing = loadCustoms();
+    if (existing.length >= data.maxCustomSlots) {
+      reject(new Error("\\u81ea\\u5b9a\\u4e49\\u69fd\\u4f4d\\u5df2\\u6ee1\\uff08\\u6700\\u591a " + data.maxCustomSlots + " \\u4e2a\\uff09\\uff0c\\u8bf7\\u5148\\u5220\\u9664\\u4e00\\u4e2a\\u518d\\u4e0a\\u4f20"));
+      return;
+    }
+    if (file.size > MAX_VIDEO_BYTES) {
+      reject(new Error("\\u89c6\\u9891\\u8d85\\u8fc7 30MB \\u4e0a\\u9650\\uff0c\\u8bf7\\u538b\\u7f29\\u6216\\u526a\\u8f91\\u540e\\u518d\\u8bd5"));
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    const probe = document.createElement("video");
+    probe.muted = true;
+    probe.playsInline = true;
+    probe.preload = "auto";
+    const fail = (message) => { URL.revokeObjectURL(url); reject(new Error(message)); };
+    probe.addEventListener("loadeddata", () => {
+      // 跳过纯黑/纯白的片头帧，取 0.5s 处画面取色
+      probe.currentTime = Math.min(0.5, (probe.duration || 1) / 2);
+    });
+    probe.addEventListener("seeked", () => {
+      try {
+        const w = probe.videoWidth, h = probe.videoHeight;
+        if (!w || !h) throw new Error("no frame");
+        const sample = document.createElement("canvas");
+        sample.width = 48; sample.height = Math.max(1, Math.round(48 * h / w));
+        sample.getContext("2d").drawImage(probe, 0, 0, sample.width, sample.height);
+        // 海报帧限 640px 宽，保住 localStorage 配额
+        const posterScale = Math.min(1, 640 / w);
+        const poster = document.createElement("canvas");
+        poster.width = Math.max(1, Math.round(w * posterScale));
+        poster.height = Math.max(1, Math.round(h * posterScale));
+        poster.getContext("2d").drawImage(probe, 0, 0, poster.width, poster.height);
+        const theme = {
+          id: data.customPrefix + Date.now().toString(36),
+          name: name || "\\u6211\\u7684\\u76ae\\u80a4",
+          kind: "video",
+          poster: poster.toDataURL("image/webp", 0.72),
+          colors: extractPalette(sample),
+          mode: "auto",
+        };
+        URL.revokeObjectURL(url);
+        videoStore.put(theme.id, file).then(() => {
+          saveCustoms([...existing, theme]);
+          applyCustomTheme(theme);
+          resolve(theme.colors);
+        }).catch((error) => reject(new Error("\\u89c6\\u9891\\u4fdd\\u5b58\\u5931\\u8d25\\uff1a" + (error?.message ?? error))));
+      } catch {
+        fail("\\u89c6\\u9891\\u89e3\\u7801\\u5931\\u8d25");
+      }
+    });
+    probe.addEventListener("error", () => fail("\\u89c6\\u9891\\u8bfb\\u53d6\\u5931\\u8d25\\uff08\\u4ec5\\u652f\\u6301 Chromium \\u53ef\\u89e3\\u7801\\u7684 MP4/H.264\\uff09"));
+    probe.src = url;
+  });
+
   const picker = document.createElement("input");
   picker.type = "file";
-  picker.accept = "image/png,image/jpeg,image/webp,image/gif,image/avif";
+  picker.accept = "image/png,image/jpeg,image/webp,image/gif,image/avif,video/mp4";
   picker.style.display = "none";
   picker.addEventListener("change", () => {
     const file = picker.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => importFromDataUrl(reader.result, file.name.replace(/\\.[a-z0-9]+$/i, ""))
-      .catch((error) => alert("WorkBuddy Skin\\uff1a" + (error?.message ?? error)));
-    reader.readAsDataURL(file);
+    const name = file.name.replace(/\\.[a-z0-9]+$/i, "");
+    const onError = (error) => alert("WorkBuddy Skin\\uff1a" + (error?.message ?? error));
+    if (file.type === "video/mp4") {
+      importFromVideoFile(file, name).catch(onError);
+    } else {
+      const reader = new FileReader();
+      reader.onload = () => importFromDataUrl(reader.result, name).catch(onError);
+      reader.readAsDataURL(file);
+    }
     picker.value = "";
     panel.style.display = "none";
   });
 
-  const uploadRow = row("\\uff0b \\u81ea\\u5b9a\\u4e49\\u56fe\\u7247", "rgba(36,201,215,.9)", () => picker.click());
+  const uploadRow = row("\\uff0b \\u81ea\\u5b9a\\u4e49\\u76ae\\u80a4", "rgba(36,201,215,.9)", () => picker.click());
   uploadRow.style.borderTop = "1px solid rgba(0,0,0,.08)";
 
   const native = row("\\u539f\\u751f\\u754c\\u9762", "rgba(0,0,0,.24)", () => { clearTheme(); panel.style.display = "none"; });
@@ -358,13 +668,23 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     panel.style.display = panel.style.display === "none" ? "block" : "none";
   });
 
+  // 点击弹窗外部自动收起：capture 阶段监听，即使页面组件 stopPropagation 也能收到；
+  // root 涵盖按钮/面板/文件选择器，点击其内部不关闭
+  document.addEventListener("mousedown", (event) => {
+    if (panel.style.display === "none") return;
+    if (!root.contains(event.target)) panel.style.display = "none";
+  }, true);
+
   root.append(button, panel, picker);
   document.body.appendChild(root);
   if (data.activeId === null) clearTheme();
   else setTheme(data.activeId);
 
   // 供脚本化调用与测试：window.__workbuddySkin.importFromDataUrl(dataUrl, name)
-  window.__workbuddySkin = { importFromDataUrl, setTheme, clearTheme, deleteCustom, listCustoms: loadCustoms };
+  window.__workbuddySkin = {
+    importFromDataUrl, importFromVideoFile, setTheme, clearTheme, deleteCustom, listCustoms: loadCustoms,
+    applyCustom: (id) => { const saved = loadCustoms().find((theme) => theme.id === id); if (saved) applyCustomTheme(saved); },
+  };
   return true;
 })()`;
 }

@@ -73,6 +73,13 @@ body[data-application-name=workbuddy] {
   --cb-vscode-widget-border: color-mix(in srgb, var(--wb-accent) 45%, transparent) !important;
   --cb-vscode-panel-border: color-mix(in srgb, var(--wb-accent) 30%, transparent) !important;
 
+  /* 侧边栏桥接变量：.conversation-section-label 等 sticky 分组标题读
+     --wb-sidebar-bg → --cb-sidebar-bg → --vscode-sideBar-background；
+     其 dark 值由 body[data-vscode-theme-name="IDE Night"] 等作用域驱动，
+     皮肤模式下可能被应用原生主题设置顶住，这里直接钉为皮肤表面色兜底 */
+  --wb-sidebar-bg: var(--wb-surface) !important;
+  --cb-sidebar-bg: var(--wb-surface) !important;
+
   /* 按钮 */
   --cb-button-dark-background: var(--wb-accent) !important;
   --cb-button-dark-foreground: #ffffff !important;
@@ -88,9 +95,11 @@ body[data-application-name=workbuddy] {
 
 #root {
   color: var(--wb-text) !important;
+  /* 左遮罩收窄降强度：只托住侧边栏宽度（0→14%），72% 强度，30% 处全透明；
+     下遮罩收窄到 85%→100%，强度降到 50%，四周大面积透出壁纸 */
   background:
-    linear-gradient(90deg, color-mix(in srgb, var(--wb-surface) 96%, transparent) 0 22%, transparent 46%),
-    linear-gradient(180deg, transparent 0 45%, color-mix(in srgb, var(--wb-surface) 78%, transparent) 78% 100%),
+    linear-gradient(90deg, color-mix(in srgb, var(--wb-surface) 72%, transparent) 0 14%, transparent 30%),
+    linear-gradient(180deg, transparent 0 70%, color-mix(in srgb, var(--wb-surface) 50%, transparent) 85% 100%),
     url(${JSON.stringify(heroDataUrl)}) right center / cover no-repeat fixed !important;
 }
 
@@ -123,22 +132,22 @@ body[data-application-name=workbuddy] {
   background: transparent !important;
 }
 
-/* 侧边栏磨砂玻璃（覆盖上面的 transparent） */
+/* 侧边栏磨砂玻璃（覆盖上面的 transparent）；强度降到 78%，让更多壁纸透出 */
 [data-view-id=sidebar] {
-  background: color-mix(in srgb, var(--wb-surface) 88%, transparent) !important;
+  background: color-mix(in srgb, var(--wb-surface) 78%, transparent) !important;
   border-right: 1px solid color-mix(in srgb, var(--wb-accent) 45%, transparent) !important;
   backdrop-filter: blur(20px) saturate(1.12);
 }
 
-/* 主内容区：顶部透出底图，底部轻微渐变保证内容可读 */
+/* 主内容区：顶部透出底图，底部轻微渐变保证内容可读（与 #root 下遮罩同步收窄降强度） */
 [data-view-id=main-content] {
-  background: linear-gradient(180deg, transparent 0 40%, color-mix(in srgb, var(--wb-surface) 74%, transparent) 100%) !important;
+  background: linear-gradient(180deg, transparent 0 70%, color-mix(in srgb, var(--wb-surface) 50%, transparent) 100%) !important;
 }
 
 /* 新建任务/首页路由（5.7.x 起独立的 main.wb-home-route，不走 [data-view-id] 结构）：
    默认不透明深底 rgb(20,20,20)，会完全盖住 #root 背景图，处理同 main-content */
 .wb-home-route {
-  background: linear-gradient(180deg, transparent 0 40%, color-mix(in srgb, var(--wb-surface) 74%, transparent) 100%) !important;
+  background: linear-gradient(180deg, transparent 0 70%, color-mix(in srgb, var(--wb-surface) 50%, transparent) 100%) !important;
 }
 
 /* 详情面板半透明磨砂 */
@@ -156,7 +165,8 @@ body[data-application-name=workbuddy] {
   content: ${copy(theme.copy?.brand)};
   color: var(--wb-accent);
   font: 800 clamp(16px, 2vw, 30px)/1.2 ui-rounded, system-ui;
-  text-shadow: 0 2px 10px white;
+  /* 无左遮罩后文字直压壁纸：双层 surface 色光晕托底，深浅主题自适应 */
+  text-shadow: 0 0 8px var(--wb-surface), 0 2px 12px var(--wb-surface);
   pointer-events: none;
 }
 
@@ -170,7 +180,7 @@ body[data-application-name=workbuddy] {
   content: ${copy(theme.copy?.headline)};
   color: var(--wb-text);
   font: 750 clamp(18px, 2.7vw, 42px)/1.15 ui-rounded, system-ui;
-  text-shadow: 0 2px 12px white;
+  text-shadow: 0 0 8px var(--wb-surface), 0 2px 14px var(--wb-surface);
   pointer-events: none;
 }
 `;

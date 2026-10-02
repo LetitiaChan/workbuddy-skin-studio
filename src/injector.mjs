@@ -45,13 +45,15 @@ async function themeEntry(loadedTheme) {
   };
 }
 
-export async function applySkin({ loadedTheme, themes, port, deps = {} }) {
+export async function applySkin({ loadedTheme, themes, port, activeId, deps = {} }) {
   const wait = deps.waitForRendererTargets ?? waitForRendererTargets;
   const Session = deps.Session ?? CdpSession;
   const menuThemes = themes?.length ? themes : [loadedTheme];
   const entries = [];
   for (const theme of menuThemes) entries.push(await themeEntry(theme));
-  const themeId = loadedTheme.manifest.id;
+  // activeId 显式传入时优先（null = 注入后保持清空，由调用方后续激活自定义皮肤）；
+  // 但不得指向菜单之外的主题
+  const themeId = activeId === undefined ? loadedTheme.manifest.id : activeId;
   // 自定义上传主题的客户端 CSS 模板：哨兵值占位，页面内替换，和内置主题同一套模板
   const cssTemplate = buildSkinCss({
     theme: {
@@ -106,4 +108,33 @@ export async function skinStatus({ port, deps = {} }) {
   }))()`;
   const targets = await fetchTargets(port);
   return evaluateTargets(targets, expression, Session);
+}
+
+// 读取渲染进程里记住的上次皮肤 id（workbuddySkinActive），无则 null。
+// 供 apply 不带 --theme 时恢复上次皮肤；读取失败（如 CDP 未就绪）返回 null 走默认
+export async function readSavedActiveSkin({ port, deps = {} }) {
+  const fetchTargets = deps.fetchRendererTargets ?? fetchRendererTargets;
+  const Session = deps.Session ?? CdpSession;
+  const expression = `(() => {
+    try { return localStorage.getItem("workbuddySkinActive"); } catch { return null; }
+  })()`;
+  const targets = await fetchTargets(port);
+  const values = await evaluateTargets(targets, expression, Session);
+  return values.find((value) => typeof value === "string" && value.length > 0) ?? null;
+}
+
+// 激活已持久化的自定义皮肤；若该皮肤已不存在（被删除/迁移失败），回落到指定内置主题
+export async function activateSavedSkin({ port, id, fallbackId, deps = {} }) {
+  const fetchTargets = deps.fetchRendererTargets ?? fetchRendererTargets;
+  const Session = deps.Session ?? CdpSession;
+  const expression = `(() => {
+    const api = window.__workbuddySkin;
+    if (!api) return false;
+    api.applyCustom(${JSON.stringify(id)});
+    if (!document.documentElement.dataset.workbuddySkin) api.setTheme(${JSON.stringify(fallbackId)});
+    return true;
+  })()`;
+  const targets = await fetchTargets(port);
+  const values = await evaluateTargets(targets, expression, Session);
+  return { activated: values.filter(Boolean).length };
 }
