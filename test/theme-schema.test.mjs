@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -98,5 +98,28 @@ test("loadTheme：拒绝经目录联结（junction/symlink）逃逸主题目录�
     } finally {
       await rm(outside, { recursive: true, force: true });
     }
+  });
+});
+
+test("loadTheme：theme.json 非法 JSON 时报错带清单路径", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "theme.json"), "{ broken");
+    await assert.rejects(loadTheme(dir), (error) => error.message.includes("theme.json") && /invalid theme manifest/.test(error.message));
+  });
+});
+
+test("loadTheme：目录内指向合法文件的符号链接 hero 可正常加载", async (t) => {
+  await withTempDir(async (dir) => {
+    await mkdir(join(dir, "assets"));
+    await writeFile(join(dir, "assets", "real.png"), Buffer.alloc(8, 4));
+    try {
+      await symlink(join(dir, "assets", "real.png"), join(dir, "hero.png"), "file");
+    } catch (error) {
+      t.skip(`无法创建文件符号链接（Windows 需开发者模式/提权）：${error.message}`);
+      return;
+    }
+    await writeFile(join(dir, "theme.json"), JSON.stringify(base));
+    const loaded = await loadTheme(dir);
+    assert.ok(loaded.heroPath.endsWith("hero.png"));
   });
 });

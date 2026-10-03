@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { ensureRendererVideos, uploadRendererVideo } from "../src/injector.mjs";
+import { applySkin, ensureRendererVideos, removeSkin, uploadRendererVideo } from "../src/injector.mjs";
 
 // 假 CDP Session：按表达式特征分流返回值，并记录完整调用序列
 class FakeSession {
@@ -12,17 +12,21 @@ class FakeSession {
     this.url = url;
     this.options = options;
     this.calls = [];
+    this.closed = false;
   }
 
   async open() {
     if (this.options.failOpen) throw new Error("connect refused");
   }
 
-  close() {}
+  close() {
+    this.closed = true;
+  }
 
   async evaluate(expression) {
     this.calls.push(expression);
     if (this.options.failEvaluate) throw new Error("renderer navigated");
+    if (this.options.failVideo && expression.includes('objectStore("videos")')) throw new Error("video timed out");
     // rendererVideoSize：读 IndexedDB 里已存视频的字节数
     if (expression.includes('objectStore("videos").get(')) return this.options.storedSize ?? 0;
     // uploadRendererVideo 收尾：返回写入 Blob 的大小
@@ -160,4 +164,77 @@ test("ensureRendererVideos：无视频主题时不触碰任何 target", async ()
   });
   assert.deepEqual(warnings, []);
   assert.equal(sessions.length, 0);
+});
+
+// applySkin 的最小依赖：一个视频主题 + 一个图片主题，临时目录内真实文件
+async function withThemes(fn) {
+  return withTempDir(async (dir) => {
+    const png = Buffer.from("89504e470d0a1a0a", "hex");
+    await writeFile(join(dir, "hero.png"), png);
+    await writeFile(join(dir, "poster.png"), png);
+    await writeFile(join(dir, "hero.mp4"), Buffer.alloc(1024, 7));
+    const image = { manifest: { id: "img", name: "Img", colors: {} }, heroPath: join(dir, "hero.png"), posterPath: null };
+    const video = { manifest: { id: "vid", name: "Vid", colors: {} }, heroPath: join(dir, "hero.mp4"), posterPath: join(dir, "poster.png") };
+    return fn({ image, video });
+  });
+}
+
+test("applySkin：每个 target 一条会话，视频预置与菜单注入复用同一连接", async () => {
+  await withThemes(async ({ image, video }) => {
+    const { Session, sessions } = sessionFactory({ storedSize: 1024 });
+    const result = await applySkin({
+      loadedTheme: image,
+      themes: [image, video],
+      port: 9223,
+      deps: { Session, waitForRendererTargets: async () => [target("t1"), target("t2")] },
+    });
+    assert.equal(result.applied, 2);
+    assert.deepEqual(result.menuThemes, ["img", "vid"]);
+    assert.deepEqual(result.videoWarnings, []);
+    assert.equal(sessions.length, 2);
+    for (const session of sessions) {
+      assert.ok(session.calls[0].includes('objectStore("videos").get('));
+      assert.ok(session.lastCall().includes("__workbuddySkinTeardown"));
+      assert.ok(session.closed);
+    }
+  });
+});
+
+test("applySkin：视频预置失败只记警告，换新连接后照常注入菜单", async () => {
+  await withThemes(async ({ image, video }) => {
+    let created = 0;
+    const sessions = [];
+    class Session extends FakeSession {
+      constructor(url) {
+        // 第一条连接视频阶段失败，其后的连接正常
+        super(url, created++ === 0 ? { failVideo: true } : { storedSize: 1024 });
+        sessions.push(this);
+      }
+    }
+    const result = await applySkin({
+      loadedTheme: image,
+      themes: [image, video],
+      port: 9223,
+      deps: { Session, waitForRendererTargets: async () => [target("t1")] },
+    });
+    assert.equal(result.applied, 1);
+    assert.equal(result.videoWarnings.length, 1);
+    assert.match(result.videoWarnings[0], /video timed out/);
+    assert.equal(sessions.length, 2);
+    assert.ok(sessions[0].closed);
+    assert.ok(sessions[1].lastCall().includes("__workbuddySkinTeardown"));
+  });
+});
+
+test("removeSkin：先调菜单 teardown 再移除节点，并发处理所有 target", async () => {
+  const { Session, sessions } = sessionFactory();
+  const result = await removeSkin({
+    port: 9223,
+    deps: { Session, fetchRendererTargets: async () => [target("t1"), target("t2")] },
+  });
+  assert.deepEqual(result, { removed: 2 });
+  for (const session of sessions) {
+    const expression = session.lastCall();
+    assert.ok(expression.indexOf("__workbuddySkinTeardown") < expression.indexOf(".remove()"));
+  }
 });

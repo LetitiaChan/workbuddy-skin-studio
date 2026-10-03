@@ -57,3 +57,53 @@ test("mountVideo：视频缺失与加载失败的日志均带主题 id，自动�
   assert.ok(script.includes('主题：" + theme.id + "'));
   assert.ok(script.includes('视频自动播放失败（" + theme.id + "）'));
 });
+
+test("teardown：脚本开头先拆上一轮注入，结尾登记本轮拆除（断观察者/解钉/移除全局监听）", () => {
+  const script = build();
+  const callPrevious = script.indexOf('window["__workbuddySkinTeardown"]?.()');
+  const register = script.indexOf('window["__workbuddySkinTeardown"] = () =>');
+  assert.ok(callPrevious > 0 && register > callPrevious);
+  const body = script.slice(register, script.indexOf("};", register));
+  for (const fragment of [
+    "layoutObserver.disconnect()",
+    "modeObserver.disconnect()",
+    "pinnedDark = null",
+    'removeEventListener("resize", scheduleReposition)',
+    'removeEventListener("storage", onStorage)',
+    'removeEventListener("mousedown", onOutsideMouseDown, true)',
+    "releaseVideo()",
+    "videoStore.close()",
+    "root.remove()",
+  ]) {
+    assert.ok(body.includes(fragment), fragment);
+  }
+});
+
+test("reposition：MutationObserver 按 rAF 合帧，不再每次变更都同步读布局", () => {
+  const script = build();
+  assert.ok(script.includes("new MutationObserver(scheduleReposition)"));
+  assert.ok(script.includes("requestAnimationFrame(() => { repositionQueued = false; reposition(); })"));
+  assert.ok(!script.includes("queueMicrotask"));
+});
+
+test("buildCustomCss：hero（可能数 MB）最后替换，前面的 split 只扫小模板", () => {
+  const script = build();
+  const start = script.indexOf("const buildCustomCss");
+  const body = script.slice(start, script.indexOf(";", start));
+  assert.ok(body.lastIndexOf("data.sentinels.hero") > body.lastIndexOf("data.sentinels.id"));
+});
+
+test("自定义主题：loadCustoms 走内存缓存，storage 事件失效；导入保存时重读最新列表", () => {
+  const script = build();
+  assert.ok(script.includes("if (!customsCache) customsCache = readCustoms();"));
+  assert.ok(script.includes('window.addEventListener("storage", onStorage)'));
+  assert.ok(!script.includes("[...existing, theme]"));
+  assert.equal(script.split("saveCustoms([...loadCustoms(), theme])").length - 1, 2);
+});
+
+test("常量与 Node 端同源：视频上限、动图分辨率、IndexedDB 库名", () => {
+  const script = build();
+  assert.ok(script.includes(`MAX_VIDEO_BYTES = ${30 * 1024 * 1024}`));
+  assert.ok(script.includes("MAX_ANIMATED_DIMENSION = 1920"));
+  assert.ok(script.includes('indexedDB.open("workbuddy-skin-studio", 1)'));
+});
