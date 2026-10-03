@@ -11,6 +11,15 @@ export const DEFAULT_CDP_PORT = 9223;
 export const MAX_THEME_VIDEO_BYTES = 30 * 1024 * 1024;
 export const EXPECTED_BUNDLE_ID = "com.workbuddy.workbuddy";
 
+// 主题素材：hero/poster 允许的图片扩展名（theme-schema 校验、theme-store 创建共用）
+export const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".avifs"]);
+// 动图不经压缩直接注入，需单独卡分辨率上限（Node 端 create 与渲染进程菜单上传共用）
+export const MAX_ANIMATED_DIMENSION = 1920;
+
+// 渲染进程 IndexedDB：视频皮肤原始文件存储（Node 端预置与菜单脚本共用同一个库）
+export const VIDEO_DB_NAME = "workbuddy-skin-studio";
+export const VIDEO_DB_STORE = "videos";
+
 // WorkBuddy renderer target 的 URL 特征：app.asar/renderer/index.html
 export const RENDERER_URL_HINT = "renderer/index.html";
 

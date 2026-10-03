@@ -1,5 +1,12 @@
+import { MAX_ANIMATED_DIMENSION, MAX_THEME_VIDEO_BYTES } from "./constants.mjs";
+import { BASE64_DECODE_SNIPPET, VIDEO_DB_LITERALS } from "./renderer-snippets.mjs";
+
 const HEX_COLOR = /^#[0-9a-f]{3,8}$/i;
 const DEFAULT_ACCENT = "#24c9d7";
+
+// 菜单脚本在 window 上登记的拆除函数名：重复注入与 pause（removeSkin）都先调它，
+// 断开上一轮的观察者/监听器/视频层，避免多轮注入并存互相改写
+export const TEARDOWN_GLOBAL = "__workbuddySkinTeardown";
 
 // 客户端 CSS 由 Node 端模板加哨兵生成，替换后与内置主题同源，避免两套模板漂移
 export const CSS_SENTINELS = {
@@ -50,14 +57,17 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   return `(() => {
   const data = ${payload};
 
-  // 兼容旧版本注入：旧脚本带常驻 MutationObserver 跟随 topbar 迁移，先杀掉防止旧菜单复活
-  window.__workbuddySkinObserver?.disconnect();
-  window.__workbuddySkinLayoutObserver?.disconnect();
-
   // 统一诊断日志：切换/加载失败时控制台输出阶段名+主题 id，便于定位「点了没反应」类问题
   const logError = (stage, detail, error) => {
     console.error("WorkBuddy Skin：" + stage + (detail ? "（" + detail + "）" : ""), error);
   };
+
+  // 拆掉上一轮注入：断开其 layout/mode 观察者、移除 resize/mousedown/storage 监听、释放视频层。
+  // 不拆的话旧 modeObserver 仍钉着旧主题的明暗，新旧两轮对 body/html 类互相改写成死循环
+  try { window[${JSON.stringify(TEARDOWN_GLOBAL)}]?.(); } catch (error) { logError("拆除上一轮注入失败", null, error); }
+  // 兼容更早版本注入（无 teardown）：至少杀掉其挂在 window 上的观察者，防止旧菜单复活
+  window.__workbuddySkinObserver?.disconnect();
+  window.__workbuddySkinLayoutObserver?.disconnect();
 
   let style = document.getElementById(data.styleId);
   if (!style) {
@@ -93,18 +103,23 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
       root.style.right = next + "px";
     }
   };
-  let relocateQueued = false;
-  const layoutObserver = new MutationObserver(() => {
-    if (relocateQueued) return;
-    relocateQueued = true;
-    queueMicrotask(() => { relocateQueued = false; reposition(); });
-  });
+  // 合帧调度：body 子树 MutationObserver 在流式输出时每个 DOM 变更任务都会回调，
+  // reposition 读 getBoundingClientRect 会强制同步布局；按 rAF 合并到每帧最多一次，
+  // 且读布局落在浏览器本就要做布局的帧内，不再在每次变更后额外触发一次 reflow
+  let repositionQueued = false;
+  const scheduleReposition = () => {
+    if (repositionQueued) return;
+    repositionQueued = true;
+    requestAnimationFrame(() => { repositionQueued = false; reposition(); });
+  };
+  const layoutObserver = new MutationObserver(scheduleReposition);
   layoutObserver.observe(document.body, { childList: true, subtree: true });
+  // 仍挂到 window：回退到旧版本注入时，旧脚本据此断开本轮观察者
   window.__workbuddySkinLayoutObserver = layoutObserver;
-  window.addEventListener("resize", reposition);
+  window.addEventListener("resize", scheduleReposition);
   reposition();
   // actions 行可能晚于本脚本挂载，下一帧再校准一次
-  requestAnimationFrame(reposition);
+  scheduleReposition();
 
   const button = document.createElement("button");
   button.type = "button";
@@ -264,13 +279,14 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   }
 
   // ---- 自定义皮肤：本地选图/选视频 -> 压缩 -> 取色 -> 生成 CSS -> 持久化（多槽位） ----
-  const buildCustomCss = (dataUrl, colors, themeId) => data.cssTemplate
-    .split(data.sentinels.hero).join(dataUrl)
+  // hero 放最后替换：它可能是数 MB 的 data URL，先替换会让后续 5 轮 split 都扫一遍大串
+  const buildCustomCss = (heroUrl, colors, themeId) => data.cssTemplate
     .split(data.sentinels.accent).join(colors.accent)
     .split(data.sentinels.secondary).join(colors.secondary)
     .split(data.sentinels.surface).join(colors.surface)
     .split(data.sentinels.text).join(colors.text)
-    .split(data.sentinels.id).join(themeId);
+    .split(data.sentinels.id).join(themeId)
+    .split(data.sentinels.hero).join(heroUrl);
 
   const hex = (r, g, b) => "#" + [r, g, b].map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("");
   const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
@@ -329,6 +345,7 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   // 必现，整个 background 简写失效背景消失），大体积 hero 统一转 blob: URL 再注入。
   // blob URL 生命周期与 renderer 一致，正好匹配注入的生命周期；localStorage 里仍存
   // data URL，每次应用现场转换，重启后重新注入时自然重建
+  ${BASE64_DECODE_SNIPPET}
   let heroBlobUrl = null;
   const releaseHeroBlob = () => {
     if (!heroBlobUrl) return;
@@ -349,16 +366,8 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     const mime = dataUrl.slice(5, comma).split(";")[0];
     const b64 = dataUrl.slice(comma + 1);
     try {
-      // 大图逐字节 atob 循环会同步阻塞主线程（切换卡顿的主要来源）：
-      // 优先原生 Uint8Array.fromBase64（Chromium 133+），旧内核回退 atob 循环
-      const bytes = typeof Uint8Array.fromBase64 === "function"
-        ? Uint8Array.fromBase64(b64)
-        : (() => {
-            const bin = atob(b64);
-            const out = new Uint8Array(bin.length);
-            for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-            return out;
-          })();
+      // 大图逐字节 atob 循环会同步阻塞主线程（切换卡顿的主要来源），走共享快路径解码
+      const bytes = wbSkinDecodeBase64(b64);
       heroBlobUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
       return heroBlobUrl;
     } catch (error) {
@@ -372,21 +381,31 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   // 原始文件存 IndexedDB（自定义皮肤元数据仍走 localStorage；内置视频主题由
   // Node 端注入时按主题 id 预置进同一个库），blob URL 会话内缓存复用 ----
   const VIDEO_LAYER_CSS = ${JSON.stringify(VIDEO_LAYER_CSS)};
-  const MAX_VIDEO_BYTES = 30 * 1024 * 1024;
+  const MAX_VIDEO_BYTES = ${MAX_THEME_VIDEO_BYTES};
   let videoLayer = null;
   const videoUrlCache = new Map();
   const releaseVideo = () => {
     videoLayer?.remove();
     videoLayer = null;
   };
+  const VIDEO_STORE = ${VIDEO_DB_LITERALS.store};
   const videoStore = {
     db: null,
+    close() {
+      this.db?.close();
+      this.db = null;
+    },
     open() {
       if (this.db) return Promise.resolve(this.db);
       return new Promise((resolve, reject) => {
-        const req = indexedDB.open("workbuddy-skin-studio", 1);
-        req.onupgradeneeded = () => { req.result.createObjectStore("videos"); };
-        req.onsuccess = () => { this.db = req.result; resolve(this.db); };
+        const req = indexedDB.open(${VIDEO_DB_LITERALS.db}, 1);
+        req.onupgradeneeded = () => { req.result.createObjectStore(VIDEO_STORE); };
+        req.onsuccess = () => {
+          this.db = req.result;
+          // 其他连接要升级/删库时主动让出，避免对方被本连接 block
+          this.db.onversionchange = () => this.close();
+          resolve(this.db);
+        };
         req.onerror = () => reject(req.error);
         // 旧连接未关闭（如页面刷新残留）时 open 会被 block：Promise 挂起但 onerror
         // 不触发，表现为「切换视频主题后毫无反应」——只落日志，保持等待（阻塞解除后仍可用）
@@ -395,8 +414,8 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     },
     txn(mode, run) {
       return this.open().then((db) => new Promise((resolve, reject) => {
-        const tx = db.transaction("videos", mode);
-        const req = run(tx.objectStore("videos"));
+        const tx = db.transaction(VIDEO_STORE, mode);
+        const req = run(tx.objectStore(VIDEO_STORE));
         tx.oncomplete = () => resolve(req?.result);
         tx.onerror = () => reject(tx.error);
         // 事务中止既不触发 oncomplete 也不触发 onerror，缺了它 Promise 会永远挂起
@@ -487,25 +506,19 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   };
   const applyCustomThemeUnsafe = (theme) => {
     const flat = effectiveColors(theme);
-    if (theme.kind === "video") {
-      releaseHeroBlob();
-      // 海报帧作 CSS 底图：视频异步挂载前的兜底，视频解码失败时也不至于裸奔
-      style.textContent = buildCustomCss(theme.poster, flat, theme.id) + VIDEO_LAYER_CSS;
-      document.documentElement.dataset.workbuddySkin = theme.id;
-      applyMode(flat.surface);
-      ensureCustomRow(theme);
-      persistActive(theme.id);
-      paint(theme.id);
-      mountVideo(theme);
-      return;
-    }
-    releaseVideo();
-    style.textContent = buildCustomCss(asCssUrl(theme.dataUrl), flat, theme.id);
+    const isVideo = theme.kind === "video";
+    // 视频：海报帧作 CSS 底图（小图，无需 blob），视频异步挂载前/解码失败时兜底；
+    // 图片：大图经 asCssUrl 转 blob URL（内部会释放上一张 hero blob）
+    if (isVideo) releaseHeroBlob();
+    else releaseVideo();
+    const heroUrl = isVideo ? theme.poster : asCssUrl(theme.dataUrl);
+    style.textContent = buildCustomCss(heroUrl, flat, theme.id) + (isVideo ? VIDEO_LAYER_CSS : "");
     document.documentElement.dataset.workbuddySkin = theme.id;
     applyMode(flat.surface);
     ensureCustomRow(theme);
     persistActive(theme.id);
     paint(theme.id);
+    if (isVideo) mountVideo(theme);
   };
 
   const deleteCustom = (id) => {
@@ -566,7 +579,7 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
   // localStorage 配额约 5MB，base64 膨胀 4/3，故原始动图限制 3MB；
   // 动图不走 canvas 压缩，需单独卡分辨率上限，避免超大尺寸拖慢渲染
   const MAX_ANIMATED_BYTES = 3 * 1024 * 1024;
-  const MAX_ANIMATED_DIMENSION = 1920;
+  const MAX_ANIMATED_DIMENSION = ${MAX_ANIMATED_DIMENSION};
   const sniffAnimated = (dataUrl) => {
     const comma = dataUrl.indexOf(",");
     if (comma < 0) return false;
@@ -587,8 +600,20 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     } catch { return false; }
   };
 
-  // 多槽位持久化：storageKey 存数组；legacyKey（单主题旧格式）读取时自动迁移
+  // 多槽位持久化：storageKey 存数组；legacyKey（单主题旧格式）读取时自动迁移。
+  // 自定义主题内嵌 MB 级 data URL，每次点击都 JSON.parse 整个数组代价不小：内存缓存一份，
+  // saveCustoms 时同步更新，其他窗口改写 localStorage 时经 storage 事件失效。
+  // 返回浅拷贝数组，防止调用方（含 window.__workbuddySkin.listCustoms）改动缓存本身
+  let customsCache = null;
+  const onStorage = (event) => {
+    if (event.key === null || event.key === data.storageKey || event.key === data.legacyKey) customsCache = null;
+  };
+  window.addEventListener("storage", onStorage);
   const loadCustoms = () => {
+    if (!customsCache) customsCache = readCustoms();
+    return customsCache.slice();
+  };
+  const readCustoms = () => {
     let list = [];
     try {
       const parsed = JSON.parse(localStorage.getItem(data.storageKey) ?? "[]");
@@ -607,14 +632,17 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     return list;
   };
   const saveCustoms = (list) => {
+    // 先更新缓存：配额超限时本会话仍可用（与告警文案「本次生效但重启后不保留」一致）
+    customsCache = list.slice();
     try { localStorage.setItem(data.storageKey, JSON.stringify(list)); }
     catch (error) { console.warn("WorkBuddy Skin：自定义主题占用超出 localStorage 配额，本次生效但重启后不保留", error); }
   };
 
+  const slotsFullError = () => new Error("\\u81ea\\u5b9a\\u4e49\\u69fd\\u4f4d\\u5df2\\u6ee1\\uff08\\u6700\\u591a " + data.maxCustomSlots + " \\u4e2a\\uff09\\uff0c\\u8bf7\\u5148\\u5220\\u9664\\u4e00\\u4e2a\\u518d\\u4e0a\\u4f20");
+
   const importFromDataUrl = (dataUrl, name) => new Promise((resolve, reject) => {
-    const existing = loadCustoms();
-    if (existing.length >= data.maxCustomSlots) {
-      reject(new Error("\\u81ea\\u5b9a\\u4e49\\u69fd\\u4f4d\\u5df2\\u6ee1\\uff08\\u6700\\u591a " + data.maxCustomSlots + " \\u4e2a\\uff09\\uff0c\\u8bf7\\u5148\\u5220\\u9664\\u4e00\\u4e2a\\u518d\\u4e0a\\u4f20"));
+    if (loadCustoms().length >= data.maxCustomSlots) {
+      reject(slotsFullError());
       return;
     }
     const animated = sniffAnimated(dataUrl);
@@ -650,7 +678,7 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
         mode: "auto",
         ...(animated ? { kind: "animated" } : {}),
       };
-      saveCustoms([...existing, theme]);
+      saveCustoms([...loadCustoms(), theme]);
       applyCustomTheme(theme);
       resolve(theme.colors);
     };
@@ -660,13 +688,12 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
 
   // 视频导入：<video> 解码抽帧取色 + 生成海报帧，原始文件存 IndexedDB
   const importFromVideoFile = (file, name) => new Promise((resolve, reject) => {
-    const existing = loadCustoms();
-    if (existing.length >= data.maxCustomSlots) {
-      reject(new Error("\\u81ea\\u5b9a\\u4e49\\u69fd\\u4f4d\\u5df2\\u6ee1\\uff08\\u6700\\u591a " + data.maxCustomSlots + " \\u4e2a\\uff09\\uff0c\\u8bf7\\u5148\\u5220\\u9664\\u4e00\\u4e2a\\u518d\\u4e0a\\u4f20"));
+    if (loadCustoms().length >= data.maxCustomSlots) {
+      reject(slotsFullError());
       return;
     }
     if (file.size > MAX_VIDEO_BYTES) {
-      reject(new Error("\\u89c6\\u9891\\u8d85\\u8fc7 30MB \\u4e0a\\u9650\\uff0c\\u8bf7\\u538b\\u7f29\\u6216\\u526a\\u8f91\\u540e\\u518d\\u8bd5"));
+      reject(new Error("\\u89c6\\u9891\\u8d85\\u8fc7 " + Math.round(MAX_VIDEO_BYTES / 1048576) + "MB \\u4e0a\\u9650\\uff0c\\u8bf7\\u538b\\u7f29\\u6216\\u526a\\u8f91\\u540e\\u518d\\u8bd5"));
       return;
     }
     const url = URL.createObjectURL(file);
@@ -674,7 +701,9 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
     probe.muted = true;
     probe.playsInline = true;
     probe.preload = "auto";
-    const fail = (message) => { URL.revokeObjectURL(url); reject(new Error(message)); };
+    // 探测用 <video> 用完即释放：撤销 blob URL 并卸载 src，及时回收解码器与文件句柄
+    const releaseProbe = () => { URL.revokeObjectURL(url); probe.removeAttribute("src"); probe.load(); };
+    const fail = (message) => { releaseProbe(); reject(new Error(message)); };
     probe.addEventListener("loadeddata", () => {
       // 跳过纯黑/纯白的片头帧，取 0.5s 处画面取色
       probe.currentTime = Math.min(0.5, (probe.duration || 1) / 2);
@@ -700,9 +729,9 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
           colors: extractPalette(sample),
           mode: "auto",
         };
-        URL.revokeObjectURL(url);
+        releaseProbe();
         videoStore.put(theme.id, file).then(() => {
-          saveCustoms([...existing, theme]);
+          saveCustoms([...loadCustoms(), theme]);
           applyCustomTheme(theme);
           resolve(theme.colors);
         }).catch((error) => reject(new Error("\\u89c6\\u9891\\u4fdd\\u5b58\\u5931\\u8d25\\uff1a" + (error?.message ?? error))));
@@ -748,10 +777,32 @@ export function buildSkinMenuScript({ entries, activeId, styleId, menuId, cssTem
 
   // 点击弹窗外部自动收起：capture 阶段监听，即使页面组件 stopPropagation 也能收到；
   // root 涵盖按钮/面板/文件选择器，点击其内部不关闭
-  document.addEventListener("mousedown", (event) => {
+  const onOutsideMouseDown = (event) => {
     if (panel.style.display === "none") return;
     if (!root.contains(event.target)) panel.style.display = "none";
-  }, true);
+  };
+  document.addEventListener("mousedown", onOutsideMouseDown, true);
+
+  // 本轮注入的完整拆除：重复注入（脚本开头）与 pause（removeSkin）都会调用。
+  // 只拆运行时资源，不动 <style>（重复注入复用同一节点、pause 由 removeSkin 自行移除）；
+  // 解除明暗钉住后类与属性的所有权还给应用
+  window[${JSON.stringify(TEARDOWN_GLOBAL)}] = () => {
+    layoutObserver.disconnect();
+    modeObserver.disconnect();
+    pinnedDark = null;
+    window.removeEventListener("resize", scheduleReposition);
+    window.removeEventListener("storage", onStorage);
+    document.removeEventListener("mousedown", onOutsideMouseDown, true);
+    releaseVideo();
+    releaseHeroBlob();
+    for (const url of videoUrlCache.values()) URL.revokeObjectURL(url);
+    videoUrlCache.clear();
+    videoStore.close();
+    root.remove();
+    if (window.__workbuddySkinLayoutObserver === layoutObserver) delete window.__workbuddySkinLayoutObserver;
+    delete window.__workbuddySkin;
+    delete window[${JSON.stringify(TEARDOWN_GLOBAL)}];
+  };
 
   root.append(button, panel, picker);
   document.body.appendChild(root);

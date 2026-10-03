@@ -23,42 +23,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 
-function Find-WorkBuddyExe {
-  if ($WorkBuddyExe -and (Test-Path -LiteralPath $WorkBuddyExe)) { return $WorkBuddyExe }
-  if ($env:WORKBUDDY_EXE -and (Test-Path -LiteralPath $env:WORKBUDDY_EXE)) { return $env:WORKBUDDY_EXE }
-  $candidates = @(
-    (Join-Path $env:LOCALAPPDATA 'workbuddy\WorkBuddy.exe'),
-    (Join-Path $env:LOCALAPPDATA 'Programs\workbuddy\WorkBuddy.exe'),
-    (Join-Path $env:ProgramFiles 'WorkBuddy\WorkBuddy.exe')
-  )
-  if (${env:ProgramFiles(x86)}) { $candidates += (Join-Path ${env:ProgramFiles(x86)} 'WorkBuddy\WorkBuddy.exe') }
-  foreach ($c in $candidates) { if (Test-Path -LiteralPath $c) { return $c } }
-  # 注册表 Uninstall 项
-  try {
-    $keys = @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
-    foreach ($k in $keys) {
-      Get-ItemProperty $k -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like '*WorkBuddy*' -and $_.InstallLocation } | ForEach-Object {
-        $p = Join-Path $_.InstallLocation 'WorkBuddy.exe'
-        if (Test-Path -LiteralPath $p) { return $p }
-      }
-    }
-  } catch {}
-  return $null
-}
-
-function Find-Node {
-  $g = Get-Command node -ErrorAction SilentlyContinue
-  if ($g) { return $g.Source }
-  $homeNode = Join-Path $env:USERPROFILE '.workbuddy\binaries\node\versions'
-  if (Test-Path $homeNode) {
-    $n = Get-ChildItem $homeNode -Directory | Sort-Object Name -Descending | Select-Object -First 1
-    if ($n) {
-      $exe = Join-Path $n.FullName 'node.exe'
-      if (Test-Path -LiteralPath $exe) { return $exe }
-    }
-  }
-  return $null
-}
+. (Join-Path $PSScriptRoot 'common.ps1')
 
 function Test-CDP([int]$P) {
   try {
@@ -67,7 +32,7 @@ function Test-CDP([int]$P) {
   } catch { return $false }
 }
 
-$exe = Find-WorkBuddyExe
+$exe = Find-WorkBuddyExe -Explicit $WorkBuddyExe
 if (-not $exe) {
   Write-Error "未找到 WorkBuddy.exe。请用 -WorkBuddyExe 参数或设置 `$env:WORKBUDDY_EXE 指向 WorkBuddy.exe"
   exit 1

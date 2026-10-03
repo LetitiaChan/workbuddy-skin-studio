@@ -54,7 +54,7 @@ export async function runCli(argv, overrides = {}) {
 
   if (command === "help") {
     return {
-      commands: ["list", "create --image PATH --name NAME", "apply [--theme ID] [--port 9223]", "pause", "status", "doctor"],
+      commands: ["list", "create --image PATH --name NAME", "apply [--theme ID] [--port 9223]", "pause (alias: restore)", "status", "doctor"],
     };
   }
   if (command === "list") return deps.listThemes({ roots });
@@ -68,11 +68,15 @@ export async function runCli(argv, overrides = {}) {
     let themeId = args.theme;
     let savedCustomId = null;
     let activeId;
+    // 读取上次皮肤（CDP 往返）与扫描主题目录（磁盘）互不依赖，并发
+    const [saved, themes] = await Promise.all([
+      themeId ? null : deps.readSavedActiveSkin({ port }).catch(() => null),
+      deps.listThemes({ roots }),
+    ]);
     if (!themeId) {
       // 未指定主题：恢复上次使用的皮肤（菜单切换时已持久化到渲染进程 localStorage）；
       // 是自定义皮肤则先按默认主题注入菜单（activeId=null），再激活自定义皮肤；
       // 没有记录或读取失败则回退默认主题
-      const saved = await deps.readSavedActiveSkin({ port }).catch(() => null);
       if (saved && saved.startsWith("custom-")) {
         themeId = DEFAULT_THEME_ID;
         activeId = null;
@@ -81,7 +85,6 @@ export async function runCli(argv, overrides = {}) {
         themeId = saved ?? DEFAULT_THEME_ID;
       }
     }
-    const themes = await deps.listThemes({ roots });
     let selected = themes.find((theme) => theme.id === themeId);
     if (!selected) {
       if (args.theme) throw new Error(`找不到主题：${themeId}`);
@@ -90,19 +93,13 @@ export async function runCli(argv, overrides = {}) {
       selected = themes.find((theme) => theme.id === themeId);
       if (!selected) throw new Error(`找不到主题：${themeId}`);
     }
+    // 选中主题必须加载成功（失败直接抛出）；其余主题并发加载，坏主题不阻塞换肤、只是不进菜单。
+    // allSettled 保序，菜单顺序与 listThemes 排序一致
     const loadedTheme = await deps.loadTheme(selected.path);
-    const menuThemes = [];
-    for (const theme of themes) {
-      if (theme.id === themeId) {
-        menuThemes.push(loadedTheme);
-        continue;
-      }
-      try {
-        menuThemes.push(await deps.loadTheme(theme.path));
-      } catch {
-        // 坏主题不阻塞换肤，只是不进菜单
-      }
-    }
+    const settled = await Promise.allSettled(
+      themes.map((theme) => (theme.id === themeId ? loadedTheme : deps.loadTheme(theme.path))),
+    );
+    const menuThemes = settled.filter(({ status }) => status === "fulfilled").map(({ value }) => value);
     const result = await deps.applySkin({ loadedTheme, themes: menuThemes, port, activeId });
     if (savedCustomId) {
       await deps.activateSavedSkin({ port, id: savedCustomId, fallbackId: themeId });
@@ -139,9 +136,10 @@ export async function runCli(argv, overrides = {}) {
         installRoot: resolveStudioPaths().installRoot,
       };
     }
+    // 非 Windows 按 macOS 布局探测；平台如实上报（Linux 等会显示 appFound:false）
     const app = "/Applications/WorkBuddy.app";
     return {
-      platform: "darwin",
+      platform: process.platform,
       app,
       appFound: await exists(app),
       bundleId: EXPECTED_BUNDLE_ID,

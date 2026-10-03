@@ -1,4 +1,4 @@
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import {
   extname,
   isAbsolute,
@@ -9,11 +9,10 @@ import {
   win32,
 } from "node:path";
 
-import { MAX_THEME_VIDEO_BYTES, THEME_SCHEMA_VERSION } from "./constants.mjs";
+import { IMAGE_EXTENSIONS, MAX_THEME_VIDEO_BYTES, THEME_SCHEMA_VERSION } from "./constants.mjs";
 
 const COLOR_KEYS = ["accent", "secondary", "surface", "text"];
 const COPY_KEYS = ["brand", "headline", "tagline"];
-const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".avifs"]);
 const VIDEO_EXTENSIONS = new Set([".mp4"]);
 const HERO_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, ...VIDEO_EXTENSIONS]);
 const HEX_COLOR = /^#[0-9A-F]{6}$/i;
@@ -129,21 +128,20 @@ export function validateThemeManifest(input) {
   };
 }
 
-async function resolveMediaFile(root, mediaPath, label) {
+async function resolveMediaFile({ root, realRoot }, mediaPath, label) {
   const filePath = resolve(root, mediaPath);
   if (!isInside(root, filePath)) {
     throw new Error(`theme ${label} escapes the theme directory`);
   }
 
-  const [realRoot, realFilePath] = await Promise.all([
-    realpath(root),
-    realpath(filePath),
-  ]);
+  const realFilePath = await realpath(filePath);
   if (!isInside(realRoot, realFilePath)) {
     throw new Error(`theme ${label} escapes the theme directory`);
   }
 
-  const info = await lstat(filePath);
+  // 校验解析后的真实文件：对目录内合法的符号链接，lstat 拿到的是链接本身（isFile=false），
+  // 会把合法主题误拒；逃逸已由上面的 realpath 检查拦截
+  const info = await stat(realFilePath);
   if (!info.isFile() || info.size < 1) {
     throw new Error(`theme ${label} must be a non-empty file`);
   }
@@ -152,17 +150,24 @@ async function resolveMediaFile(root, mediaPath, label) {
 
 export async function loadTheme(themeDir) {
   const root = resolve(themeDir);
-  const raw = JSON.parse(await readFile(join(root, "theme.json"), "utf8"));
+  const manifestPath = join(root, "theme.json");
+  let raw;
+  try {
+    raw = JSON.parse(await readFile(manifestPath, "utf8"));
+  } catch (error) {
+    throw new Error(`invalid theme manifest ${manifestPath}: ${error.message}`, { cause: error });
+  }
   const manifest = validateThemeManifest(raw);
 
-  const hero = await resolveMediaFile(root, manifest.hero, "hero");
+  const dirs = { root, realRoot: await realpath(root) };
+  const hero = await resolveMediaFile(dirs, manifest.hero, "hero");
   if (VIDEO_EXTENSIONS.has(extname(manifest.hero).toLowerCase()) && hero.size > MAX_THEME_VIDEO_BYTES) {
     throw new Error(
       `theme hero video exceeds the ${MAX_THEME_VIDEO_BYTES / 1024 / 1024}MB limit`,
     );
   }
   const poster = manifest.poster
-    ? await resolveMediaFile(root, manifest.poster, "poster")
+    ? await resolveMediaFile(dirs, manifest.poster, "poster")
     : null;
 
   return { manifest, heroPath: hero.path, posterPath: poster?.path ?? null, root };
