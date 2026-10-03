@@ -134,21 +134,27 @@ install is always left untouched.
   Windows install directory. This tool only injects into the live renderer.
 - CDP binds to loopback `127.0.0.1` only. Tell the user not to run untrusted
   local software while a skin is active (Chromium CDP has no same-user auth).
-- Injection lives for the renderer's lifetime. After a **manual** WorkBuddy
-  restart the skin disappears by design — re-run `apply` to bring it back.
+- Revision: injection lives for the renderer's lifetime. After a **manual**
+  WorkBuddy restart the skin disappears by design — re-run `apply` to bring it
+  back.
+- Built-in video themes pre-provision their MP4 into the renderer's IndexedDB at
+  apply time (chunked). A failed pre-provision (renderer timeout / OOM) degrades
+  to a warning and does **not** block the skin injection; the menu falls back
+  with a hint when video data is missing.
 - Do not import README/preview screenshots or images with baked-in UI as a
   theme background; use clean wallpapers / character art.
 
 ## Checks (sanity before reporting done)
 
 ```bash
+npm test                  # unit tests (node:test) — no live WorkBuddy required
 node src/cli.mjs doctor   # platform, app path, CDP port, renderer hint
 node src/cli.mjs status   # injection state
 node --check src/cli.mjs  # syntax
 ```
 
 `doctor` should report the correct platform, a found WorkBuddy app, and the
-renderer hint `renderer/index.html`.
+renderer hint `renderer/index.html`. `npm test` should report all tests passing.
 
 ## Resources
 
@@ -162,6 +168,9 @@ renderer hint `renderer/index.html`.
 - `scripts/apply.ps1` / `pause.ps1` / `find-workbuddy.ps1` — Windows launchers.
 - `themes/` — 15 built-in theme folders (`theme.json` + `hero.webp`; video themes use
   `hero.mp4` + `poster` image, e.g. `misty-fir-rain`, `snow-animals`).
+- `test/` — Node built-in unit tests (`node:test`): theme schema/poster rules and
+  path-escape guard, video pre-provision chunking/dedup/failure degradation, and
+  🎨 menu script structure. Run `npm test`.
 - `README.md` — full human-readable documentation.
 
 ## One-line summary for the user

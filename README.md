@@ -143,6 +143,21 @@ node src/cli.mjs pause                             # 恢复原生
 node src/cli.mjs doctor                            # 检查环境（app 路径、端口、平台）
 ```
 
+## 开发与测试
+
+本仓库是纯 Node.js（ESM），无构建步骤、无第三方运行时依赖，只用 Node 内置模块。
+
+```bash
+node --version   # 需 Node 18+
+npm test         # 运行 test/ 下的单元测试（等价于 node --test）
+```
+
+单元测试覆盖三类不依赖真实 WorkBuddy 的核心逻辑（用假 CDP Session 与临时目录替代真实依赖，运行 WorkBuddy 与否都能跑通）：
+
+- `test/theme-schema.test.mjs` — 主题清单校验：`poster` 规则（视频 hero 必填、图片 hero 禁填、必须是主题目录内的图片相对路径）与 `loadTheme` 的 realpath 逃逸防护（junction / symlink）
+- `test/injector.test.mjs` — 视频预置链路：4MB 分块切分与暂存清理、写入字节数校验、`Uint8Array.fromBase64` 快路径 + `atob` 回退 + 主线程让出、按尺寸判重跳过、单个渲染进程失败降级为警告、本地文件缺失降级
+- `test/skin-menu.test.mjs` — 🎨 菜单注入脚本：生成脚本可被 JS 引擎编译、切换 / 上传 / 恢复原生各路径的异常兜底与错误日志、大图解码快路径、IndexedDB 阻塞与中止处理
+
 ## 内置主题
 
 | 主题 id | 名称 | 风格 |
@@ -167,6 +182,7 @@ node src/cli.mjs doctor                            # 检查环境（app 路径�
 
 - 这是一个轻量工具。皮肤跟随当前 renderer 存活，WorkBuddy 完整重载界面后重新运行一次 apply 即可
 - CDP 只绑定本机回环地址 `127.0.0.1`，主题运行期间勿跑来路不明的本机程序
+- 内置视频主题的 MP4 需在注入时预置进渲染进程 IndexedDB；单次预置失败（渲染进程超时 / 内存不足）只记录警告，不阻塞皮肤本身注入，菜单侧对视频数据缺失有兜底提示
 - 不修改官方安装目录与代码签名
 - 深色主题已适配 `data-vscode-theme-kind` 自动切换；点「原生界面」恢复时默认回到 light（若你原生是 dark 需手动切回）
 - 当前版本针对 WorkBuddy 的 `--cb-*` 设计变量系统和 `[data-view-id]` DOM 锚点适配，与 Codex 的 DOM 结构完全不同
