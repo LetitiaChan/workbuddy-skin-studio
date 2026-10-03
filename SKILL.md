@@ -162,15 +162,19 @@ renderer hint `renderer/index.html`. `npm test` should report all tests passing.
 - `src/cdp-client.mjs` — CDP connection + renderer discovery.
 - `src/skin-css.mjs` — `--cb-*` variable overrides + background + container transparency.
 - `src/skin-menu.mjs` — the 🎨 in-app menu (switch / upload / delete / native).
-- `src/injector.mjs` — idempotent CSS+menu injection and removal.
+- `src/injector.mjs` — idempotent CSS+menu injection and removal (re-inject / pause
+  call the menu's `window.__workbuddySkinTeardown` first).
+- `src/renderer-snippets.mjs` — shared in-page JS snippets (IndexedDB open, base64 decode).
 - `src/constants.mjs`, `src/theme-schema.mjs`, `src/theme-store.mjs` — config & theme model.
 - `scripts/apply.command` / `pause.command` — macOS launchers.
-- `scripts/apply.ps1` / `pause.ps1` / `find-workbuddy.ps1` — Windows launchers.
+- `scripts/apply.ps1` / `pause.ps1` / `find-workbuddy.ps1` — Windows launchers
+  (shared `Find-WorkBuddyExe` / `Find-Node` live in `scripts/common.ps1`).
 - `themes/` — 15 built-in theme folders (`theme.json` + `hero.webp`; video themes use
   `hero.mp4` + `poster` image, e.g. `misty-fir-rain`, `snow-animals`).
 - `test/` — Node built-in unit tests (`node:test`): theme schema/poster rules and
-  path-escape guard, video pre-provision chunking/dedup/failure degradation, and
-  🎨 menu script structure. Run `npm test`.
+  path-escape guard, theme listing/dedup, CDP session domains, CLI apply orchestration,
+  video pre-provision chunking/dedup/failure degradation, and 🎨 menu script structure
+  (teardown, rAF-coalesced layout). Run `npm test`.
 - `README.md` — full human-readable documentation.
 
 ## One-line summary for the user
